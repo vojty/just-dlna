@@ -3,6 +3,7 @@ package media
 
 import (
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -14,7 +15,71 @@ func BaseURL(host string, port int) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
+	if ip, err := netip.ParseAddr(host); err == nil && ip.Is6() && ip.IsLinkLocalUnicast() {
+		if alt, ok := replaceLinkLocal(ip, interfaceAddrs()); ok {
+			host = alt.String()
+		}
+	}
 	return "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// replaceLinkLocal picks another address of the interface that owns the IPv6
+// link-local address ip: IPv4 first, then a non-link-local IPv6. Clients
+// discovering the server over IPv6 use its link-local address, which is only
+// usable together with a zone (fe80::1%en0) that is the client's own interface
+// name and so cannot be put into URLs; VLC, for one, fails to open them.
+func replaceLinkLocal(ip netip.Addr, ifaces [][]netip.Addr) (netip.Addr, bool) {
+	ip = ip.WithZone("")
+	for _, addrs := range ifaces {
+		owner := false
+		var v4, v6 netip.Addr
+		for _, a := range addrs {
+			switch {
+			case a == ip:
+				owner = true
+			case a.Is4() && !v4.IsValid():
+				v4 = a
+			case a.Is6() && !a.IsLinkLocalUnicast() && !v6.IsValid():
+				v6 = a
+			}
+		}
+		if !owner {
+			continue
+		}
+		if v4.IsValid() {
+			return v4, true
+		}
+		return v6, v6.IsValid()
+	}
+	return netip.Addr{}, false
+}
+
+// interfaceAddrs lists the unicast addresses of each up network interface.
+func interfaceAddrs() [][]netip.Addr {
+	ifis, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var all [][]netip.Addr
+	for _, ifi := range ifis {
+		if ifi.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		var ips []netip.Addr
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok {
+				if ip, ok := netip.AddrFromSlice(n.IP); ok {
+					ips = append(ips, ip.Unmap())
+				}
+			}
+		}
+		all = append(all, ips)
+	}
+	return all
 }
 
 func escapePath(rel string) string {
