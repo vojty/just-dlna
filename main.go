@@ -1,0 +1,352 @@
+// Command just-dlna is a small DLNA media server that streams video files from a
+// folder as-is, with external and embedded subtitle support.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/anacrolix/dms/dlna/dms"
+	"github.com/lmittmann/tint"
+
+	"just-dlna/internal/cds"
+	"just-dlna/internal/library"
+	"just-dlna/internal/media"
+)
+
+type config struct {
+	configFile   string
+	mediaPath    string
+	friendlyName string
+	httpPort     int
+	mediaPort    int
+	cacheDir     string
+	subCharset   string
+	prefetchSubs bool
+	logLevel     string
+	dmsLogLevel  string
+	logFormat    string
+	logHeaders   bool
+	ifname       string
+	allowedIPs   string
+}
+
+// env returns the environment variable key, or def when unset.
+func env(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	return def
+}
+
+func envInt(key string, def int) int {
+	if v, ok := os.LookupEnv(key); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func envBool(key string, def bool) bool {
+	if v, ok := os.LookupEnv(key); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	return def
+}
+
+// envKeys maps flag names to the environment variables that override their
+// defaults. Only these flags can be set from the config file.
+var envKeys = map[string]string{}
+
+func stringFlag(p *string, name, key, def, usage string) {
+	flag.StringVar(p, name, env(key, def), usage+" ["+key+"]")
+	envKeys[name] = key
+}
+
+func intFlag(p *int, name, key string, def int, usage string) {
+	flag.IntVar(p, name, envInt(key, def), usage+" ["+key+"]")
+	envKeys[name] = key
+}
+
+func boolFlag(p *bool, name, key string, def bool, usage string) {
+	flag.BoolVar(p, name, envBool(key, def), usage+" ["+key+"]")
+	envKeys[name] = key
+}
+
+// parseConfig reads settings with this precedence: command line flags,
+// environment variables, the YAML config file, built-in defaults.
+func parseConfig() (config, error) {
+	var c config
+	defaultCache := filepath.Join(os.TempDir(), "just-dlna-cache")
+	if d, err := os.UserCacheDir(); err == nil {
+		defaultCache = filepath.Join(d, "just-dlna")
+	}
+	flag.StringVar(&c.configFile, "config", env("CONFIG_FILE", ""), "YAML config file with flag names as keys (default: first of "+strings.Join(configSearchPaths(), ", ")+", if present) [CONFIG_FILE]")
+	stringFlag(&c.mediaPath, "path", "MEDIA_PATH", ".", "media folder to serve")
+	stringFlag(&c.friendlyName, "name", "FRIENDLY_NAME", "", "server name shown on clients (default: hostname based)")
+	intFlag(&c.httpPort, "http-port", "HTTP_PORT", 1338, "DLNA control/description HTTP port")
+	intFlag(&c.mediaPort, "media-port", "MEDIA_PORT", 1339, "video/subtitle streaming HTTP port")
+	stringFlag(&c.cacheDir, "cache", "CACHE_DIR", defaultCache, "cache folder for converted subtitles")
+	stringFlag(&c.subCharset, "sub-charset", "SUB_CHARSET", "", "charset of non-UTF-8 subtitle files, e.g. cp1250; converted to UTF-8")
+	boolFlag(&c.prefetchSubs, "prefetch-subs", "PREFETCH_SUBS", true, "extract embedded subtitles when a client opens a video's details")
+	stringFlag(&c.logLevel, "log-level", "LOG_LEVEL", "info", "debug, info, warn or error")
+	stringFlag(&c.dmsLogLevel, "dms-log-level", "DMS_LOG_LEVEL", "info", "minimum level for the DLNA/SSDP library logs, on top of -log-level")
+	stringFlag(&c.logFormat, "log-format", "LOG_FORMAT", "auto", "auto, pretty, text or json; auto is pretty on a terminal, text otherwise")
+	boolFlag(&c.logHeaders, "log-headers", "LOG_HEADERS", false, "dump DLNA HTTP headers to stderr (client debugging)")
+	stringFlag(&c.ifname, "ifname", "IFNAME", "", "only announce on this network interface (default: all)")
+	stringFlag(&c.allowedIPs, "allowed-ips", "ALLOWED_IPS", "0.0.0.0/0,::/0", "comma separated client networks allowed to connect")
+	flag.Parse()
+
+	if c.configFile == "" {
+		c.configFile = findConfigFile()
+	}
+	if c.configFile != "" {
+		if err := applyConfigFile(flag.CommandLine, c.configFile, envKeys); err != nil {
+			return c, err
+		}
+	}
+	return c, nil
+}
+
+func parseLevel(s string) (slog.Level, error) {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(s)); err != nil {
+		return 0, fmt.Errorf("invalid log level %q", s)
+	}
+	return level, nil
+}
+
+// isTerminal reports whether f is attached to a terminal.
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+func newLogger(c config) (*slog.Logger, error) {
+	level, err := parseLevel(c.logLevel)
+	if err != nil {
+		return nil, err
+	}
+	format := strings.ToLower(c.logFormat)
+	if format == "auto" {
+		format = "text"
+		if isTerminal(os.Stderr) {
+			format = "pretty"
+		}
+	}
+	switch format {
+	case "pretty":
+		// Human-readable output: short local time, colored levels unless
+		// stderr is not a terminal or NO_COLOR is set (https://no-color.org).
+		_, noColor := os.LookupEnv("NO_COLOR")
+		return slog.New(tint.NewHandler(os.Stderr, &tint.Options{
+			Level:      level,
+			TimeFormat: "15:04:05.000",
+			NoColor:    noColor || !isTerminal(os.Stderr),
+		})), nil
+	case "text":
+		return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})), nil
+	default:
+		return nil, fmt.Errorf("invalid log format %q", c.logFormat)
+	}
+}
+
+// minLevelHandler drops records below min, on top of the wrapped handler's
+// own level. It quiets chatty third-party components independently of the
+// global level.
+type minLevelHandler struct {
+	slog.Handler
+	min slog.Level
+}
+
+func (h minLevelHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return l >= h.min && h.Handler.Enabled(ctx, l)
+}
+
+func (h minLevelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return minLevelHandler{h.Handler.WithAttrs(attrs), h.min}
+}
+
+func (h minLevelHandler) WithGroup(name string) slog.Handler {
+	return minLevelHandler{h.Handler.WithGroup(name), h.min}
+}
+
+func main() {
+	c, err := parseConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	logger, err := newLogger(c)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	slog.SetDefault(logger)
+	if err := run(c, logger); err != nil {
+		logger.Error("fatal", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(c config, logger *slog.Logger) error {
+	allowed, err := parseNets(c.allowedIPs)
+	if err != nil {
+		return err
+	}
+	dmsLevel, err := parseLevel(c.dmsLogLevel)
+	if err != nil {
+		return err
+	}
+	lib, err := library.Open(c.mediaPath, logger.With("component", "library"))
+	if err != nil {
+		return err
+	}
+	defer lib.Close()
+
+	extractor, err := media.NewExtractor(lib, c.cacheDir, c.subCharset, logger.With("component", "subtitles"))
+	if err != nil {
+		return err
+	}
+	mediaSrv := &media.Server{
+		Lib:       lib,
+		Extractor: extractor,
+		Port:      c.mediaPort,
+		Allowed:   allowed,
+		Logger:    logger.With("component", "media"),
+	}
+	browser := &cds.Browser{
+		Lib:          lib,
+		Media:        mediaSrv,
+		PrefetchSubs: c.prefetchSubs,
+		Logger:       logger.With("component", "cds"),
+	}
+
+	mediaLn, err := net.Listen("tcp", ":"+strconv.Itoa(c.mediaPort))
+	if err != nil {
+		return fmt.Errorf("media listener: %w", err)
+	}
+	dlnaLn, err := net.Listen("tcp", ":"+strconv.Itoa(c.httpPort))
+	if err != nil {
+		return fmt.Errorf("dlna listener: %w", err)
+	}
+
+	var ifaces []net.Interface
+	if c.ifname != "" {
+		ifi, err := net.InterfaceByName(c.ifname)
+		if err != nil {
+			return fmt.Errorf("interface %q: %w", c.ifname, err)
+		}
+		ifaces = []net.Interface{*ifi}
+	}
+
+	dmsSrv := &dms.Server{
+		HTTPConn:               dlnaLn,
+		FriendlyName:           c.friendlyName,
+		Interfaces:             ifaces,
+		RootObjectPath:         c.mediaPath,
+		FS:                     lib.FS(),
+		OnBrowseDirectChildren: browser.BrowseDirectChildren,
+		OnBrowseMetadata:       browser.BrowseMetadata,
+		NoTranscode:            true,
+		NoProbe:                true,
+		IgnoreHidden:           true,
+		AllowedIpNets:          allowed,
+		LogHeaders:             c.logHeaders,
+		NotifyInterval:         30 * time.Second,
+		Logger:                 slog.New(minLevelHandler{logger.Handler(), dmsLevel}).With("component", "dms"),
+	}
+	if err := dmsSrv.Init(); err != nil {
+		return fmt.Errorf("dms init: %w", err)
+	}
+
+	httpSrv := &http.Server{
+		Handler:           mediaSrv.Handler(),
+		ReadHeaderTimeout: 30 * time.Second,
+		ErrorLog:          slog.NewLogLogger(logger.With("component", "media-http").Handler(), slog.LevelWarn),
+	}
+
+	abs, _ := filepath.Abs(c.mediaPath)
+	logger.Info("starting",
+		"config", c.configFile,
+		"media_path", abs,
+		"name", dmsSrv.FriendlyName,
+		"dlna_port", c.httpPort,
+		"media_port", c.mediaPort,
+		"cache", c.cacheDir,
+		"prefetch_subs", c.prefetchSubs,
+		"interfaces", interfaceNames(dmsSrv.Interfaces),
+		"allowed_ips", c.allowedIPs,
+	)
+
+	errc := make(chan error, 2)
+	go func() {
+		if err := httpSrv.Serve(mediaLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errc <- fmt.Errorf("media server: %w", err)
+		}
+	}()
+	go func() {
+		if err := dmsSrv.Run(); err != nil {
+			errc <- fmt.Errorf("dlna server: %w", err)
+		}
+	}()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	select {
+	case <-ctx.Done():
+		logger.Info("shutting down")
+	case err = <-errc:
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if serr := httpSrv.Shutdown(shutdownCtx); serr != nil {
+		logger.Warn("media server shutdown", "error", serr)
+	}
+	if cerr := dmsSrv.Close(); cerr != nil {
+		logger.Debug("dlna server close", "error", cerr)
+	}
+	return err
+}
+
+func interfaceNames(ifs []net.Interface) []string {
+	names := make([]string, len(ifs))
+	for i, ifi := range ifs {
+		names[i] = ifi.Name
+	}
+	return names
+}
+
+func parseNets(s string) ([]*net.IPNet, error) {
+	var nets []*net.IPNet
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(part)
+		if err != nil {
+			return nil, fmt.Errorf("allowed-ips: %w", err)
+		}
+		nets = append(nets, n)
+	}
+	return nets, nil
+}

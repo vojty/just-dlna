@@ -1,0 +1,40 @@
+# just-dlna config example. Copy to just-dlna.yaml (current directory),
+# <user config dir>/just-dlna/just-dlna.yaml or /etc/just-dlna/just-dlna.yaml, or pass it with
+# -config / CONFIG_FILE. Keys are flag names; command line flags and
+# environment variables take precedence over this file. Every setting is
+# optional; the values below are the defaults unless noted.
+
+# Media folder to serve. "~" is expanded; relative paths are relative to the
+# current directory.
+path: ~/Videos                      # default: .
+
+# Server name shown on clients.
+# name: Home DLNA                   # default: hostname based
+
+# DLNA control/description port and video/subtitle streaming port.
+# http-port: 1338
+# media-port: 1339
+
+# Cache folder for converted subtitles.
+# cache: ~/.cache/just-dlna             # default: user cache dir
+
+# Charset of non-UTF-8 subtitle files; they are converted to UTF-8.
+# sub-charset: cp1250
+
+# Extract embedded subtitles when a client opens a video's details.
+# prefetch-subs: true
+
+# Only announce on this network interface.
+# ifname: eth0                      # default: all interfaces
+
+# Client networks allowed to connect: a list or a comma separated string.
+# allowed-ips: [192.168.1.0/24, fd00::/8]   # default: 0.0.0.0/0,::/0
+
+# Logging: debug, info, warn or error.
+# log-level: info
+# Minimum level for the DLNA/SSDP library logs, on top of log-level.
+# dms-log-level: info
+# auto, pretty, text or json; auto is pretty on a terminal, text otherwise.
+# log-format: auto
+# Dump DLNA HTTP headers to stderr (client debugging).
+# log-headers: false
