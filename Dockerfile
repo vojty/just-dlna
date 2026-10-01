@@ -1,4 +1,4 @@
-FROM node:24-alpine AS ui
+FROM --platform=$BUILDPLATFORM node:24-alpine AS ui
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -6,12 +6,13 @@ COPY tsconfig.json vite.config.ts ./
 COPY ui ./ui
 RUN npm run build
 
-FROM golang:1.27-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
+ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /just-dlna .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /just-dlna .
 
 FROM alpine:3
 # ffmpeg/ffprobe are only used to read media info and convert subtitles;
