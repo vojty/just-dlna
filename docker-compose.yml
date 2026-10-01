@@ -5,15 +5,22 @@ services:
     # SSDP discovery uses multicast, which needs the host network (Linux hosts).
     network_mode: host
     restart: unless-stopped
-    environment:
-      FRIENDLY_NAME: "Home DLNA"
-      LOG_LEVEL: info        # debug for troubleshooting
-      # SUB_CHARSET: cp1250  # charset of non-UTF-8 subtitle files
-      # IFNAME: eth0         # announce on one interface only
+    # Settings are edited in the web UI (http://<host>:1340) and saved to
+    # /config/just-dlna.yaml. Settings given as environment variables are
+    # locked in the web UI.
+    # environment:
+    #   FRIENDLY_NAME: "Home DLNA"
+    #   LOG_LEVEL: debug     # for troubleshooting
+    #   SUB_CHARSET: cp1250  # charset of non-UTF-8 subtitle files
+    #   IFNAME: eth0         # announce on one interface only
     volumes:
-      - /path/to/videos:/media:ro
+      # Writable so files can be uploaded and managed in the web UI. The
+      # container runs as uid 1000, which must be able to write to the
+      # folder. Add :ro to make it read-only.
+      - /path/to/videos:/media
       - just-dlna-cache:/cache
-      # - ./just-dlna.yaml:/etc/just-dlna/just-dlna.yaml:ro
+      - just-dlna-config:/config
 
 volumes:
   just-dlna-cache:
+  just-dlna-config:

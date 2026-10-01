@@ -25,6 +25,15 @@ func configSearchPaths() []string {
 	return append(paths, filepath.Join("/etc/just-dlna", configFileName))
 }
 
+// defaultConfigFile is where settings saved in the web UI go when no config
+// file exists yet: the user config dir, or else the current directory.
+func defaultConfigFile() string {
+	if paths := configSearchPaths(); len(paths) > 2 {
+		return paths[1]
+	}
+	return configFileName
+}
+
 // findConfigFile returns the first existing file from configSearchPaths, or
 // "" when there is none.
 func findConfigFile() string {

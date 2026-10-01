@@ -70,7 +70,8 @@ func (l *Library) Subtitles(rel string) ([]Subtitle, error) {
 	return subs, nil
 }
 
-func isSubtitle(name string) bool {
+// IsSubtitle reports whether name has a sidecar subtitle extension.
+func IsSubtitle(name string) bool {
 	return subtitleExts[strings.ToLower(path.Ext(name))]
 }
 
@@ -98,7 +99,7 @@ func (l *Library) externalSubtitles(video string) []Subtitle {
 			subDirs = append(subDirs, path.Join(dir, n))
 		case VideoMIME(n) != "":
 			videos++
-		case isSubtitle(n):
+		case IsSubtitle(n):
 			subFiles = append(subFiles, path.Join(dir, n))
 		}
 	}
@@ -113,7 +114,7 @@ func (l *Library) externalSubtitles(video string) []Subtitle {
 				continue
 			}
 			for _, de := range sdes {
-				if !de.IsDir() && !hidden(de.Name()) && isSubtitle(de.Name()) {
+				if !de.IsDir() && !hidden(de.Name()) && IsSubtitle(de.Name()) {
 					matched = append(matched, path.Join(sd, de.Name()))
 				}
 			}

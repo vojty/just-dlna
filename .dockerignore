@@ -1,4 +1,8 @@
 .git
+.claude
 *.md
 docker-compose.yml
 just-dlna.yaml
+node_modules
+ui/dist
+ui/src/routeTree.gen.ts

@@ -20,10 +20,12 @@ UPnP ContentDirectory), with subtitle support added on top.
   - Non-UTF-8 subtitle files can be converted with `-sub-charset cp1250`.
 - Client profiles: LG webOS (subtitle `<res>` entries) and a generic profile
   (also Samsung-style `CaptionInfo.sec`). See `internal/profile` to add more.
+- Web UI (port 1340) to change settings and to upload, rename, move, download
+  and delete files in the media folder.
 
 ## Requirements
 
-- Go 1.24+ to build.
+- Go 1.25+ to build, Node.js 24+ to build the web UI.
 - `ffmpeg` and `ffprobe` in `PATH` at runtime (media details and subtitle
   conversion). Without them videos and plain UTF-8 `.srt` files still work.
 
@@ -49,6 +51,8 @@ go run . -path ~/Videos -name "My DLNA"
 | `-dms-log-level` | `DMS_LOG_LEVEL` | `info` | minimum level for the DLNA/SSDP library, on top of `-log-level` |
 | `-log-format` | `LOG_FORMAT` | `auto` | `auto`, `pretty`, `text` or `json` |
 | `-log-headers` | `LOG_HEADERS` | `false` | dump DLNA HTTP headers (client debugging) |
+| `-ui-port` | `UI_PORT` | `1340` | web UI port, `0` disables the web UI |
+| `-ui-dir` | `UI_DIR` | `ui/dist` | folder with the built web UI |
 
 ### Config file
 
@@ -71,7 +75,9 @@ allowed-ips: [192.168.1.0/24, fd00::/8]   # or "192.168.1.0/24,fd00::/8"
 
 [`just-dlna.example.yaml`](just-dlna.example.yaml) lists every setting with its default.
 Command line flags win over environment variables, which win over the file.
-Unknown keys are an error. `~` is expanded in `path` and `cache`; relative
+Unknown keys are an error. A file given with `-config` that does not exist yet
+is created when settings are saved in the web UI; without any config file they
+are saved to `just-dlna/just-dlna.yaml` in the user config dir. `~` is expanded in `path` and `cache`; relative
 paths are relative to the current directory, not to the file.
 
 Logs go to stderr via Go's `log/slog`. Use `-log-level debug` to see every
@@ -84,6 +90,34 @@ routes) stays hidden unless you also set `-dms-log-level debug`.
 (`pretty`; set `NO_COLOR` to disable colors) and logfmt (`text`) otherwise,
 e.g. under Docker or systemd, where full timestamps help log collectors.
 
+## Web UI
+
+The server also serves a small web app on `-ui-port` (default
+`http://<host>:1340`):
+
+- **Files**: browse the media folder, upload files (drag and drop, with
+  progress and cancel), create folders, rename, move, download and delete.
+  Uploads are written to a hidden `.<name>.part` file and renamed when complete.
+- **Settings**: edit every setting. Changes are saved to the config file
+  (comments in it are kept) and applied with the **Restart now** button, which
+  restarts the server process in place. Settings given as command line flags or
+  environment variables take precedence over the file, so they are shown
+  locked.
+
+There is no authentication yet: anyone who can reach the port can change
+settings and delete files. Keep it on a trusted network, or block the port with
+a firewall. The media folder must be writable for uploads.
+
+Build the UI once with `npm ci && npm run build` (output in `ui/dist`, served by
+the Go server). For UI development run the Go server and `npm run dev`; Vite
+serves the app with hot reload and proxies `/api` to `localhost:1340`. Other
+scripts: `npm run lint` (Oxlint), `npm run fmt` / `fmt:check` (Oxfmt),
+`npm run typecheck`.
+
+The UI is a Vite + React + TypeScript single page app using TanStack Router
+(file based routes in `ui/src/routes`), Tailwind CSS and Base UI. Its API is in
+`internal/admin`.
+
 ## Docker
 
 DLNA discovery uses UDP multicast (SSDP), so the container needs the host
@@ -95,13 +129,16 @@ docker build -t just-dlna .
 ```
 
 ```bash
-docker run -d --name just-dlna --network host -v /path/to/videos:/media:ro -v just-dlna-cache:/cache -e FRIENDLY_NAME="Home DLNA" just-dlna
+docker run -d --name just-dlna --network host -v /path/to/videos:/media -v just-dlna-cache:/cache -v just-dlna-config:/config just-dlna
 ```
 
 Or edit the volume path in `docker-compose.yml` and run `docker compose up -d`.
-To use a config file, mount it at `/etc/just-dlna/just-dlna.yaml` (see the commented line
-in `docker-compose.yml`); the image's `MEDIA_PATH`, `CACHE_DIR`, `HTTP_PORT`,
-`MEDIA_PORT` and `LOG_LEVEL` environment variables take precedence over it.
+The image builds the web UI and serves it on port 1340. Settings saved there go
+to `/config/just-dlna.yaml` (`CONFIG_FILE`), so keep `/config` on a volume. The
+image sets `MEDIA_PATH=/media` and `CACHE_DIR=/cache`, so those two are locked
+in the web UI; the same goes for any `-e` variable you add. The container runs
+as uid 1000, which needs write access to the media folder for uploads; mount it
+with `:ro` if you do not want that.
 
 ## Layout
 
@@ -112,3 +149,6 @@ in `docker-compose.yml`); the image's `MEDIA_PATH`, `CACHE_DIR`, `HTTP_PORT`,
 - `internal/media` – video/subtitle HTTP server, ffmpeg subtitle extraction
 - `internal/profile` – per-client subtitle handling (LG, generic)
 - `internal/didl` – DIDL-Lite XML types
+- `internal/admin` – web UI server and its JSON API (settings, file management)
+- `settings.go` – settings shown in the web UI, saving the config file
+- `ui/` – web UI sources (tooling config and `package.json` in the repo root)

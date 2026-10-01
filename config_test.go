@@ -96,3 +96,112 @@ func TestApplyConfigFileEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func ptr(s string) *string { return &s }
+
+func TestWriteConfigFile(t *testing.T) {
+	p := writeConfig(t, `# my settings
+path: ~/Videos # videos
+name: Old
+# log-level: info
+`)
+	types := map[string]string{"name": "string", "path": "string", "http-port": "int", "allowed-ips": "list", "log-headers": "bool"}
+	err := writeConfigFile(p, map[string]*string{
+		"name":        ptr("123"),
+		"path":        nil,
+		"http-port":   ptr("8080"),
+		"allowed-ips": ptr("192.168.1.0/24, fd00::/8"),
+		"log-headers": ptr("1"),
+	}, types)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	got := string(b)
+	for _, want := range []string{"# my settings", "# log-level: info", `name: "123"`, "http-port: 8080", "allowed-ips: [192.168.1.0/24, 'fd00::/8']", "log-headers: true"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "path:") {
+		t.Errorf("path not removed:\n%s", got)
+	}
+
+	// The written file must load back.
+	fset := flag.NewFlagSet("test", flag.ContinueOnError)
+	name := fset.String("name", "", "")
+	ips := fset.String("allowed-ips", "", "")
+	fset.Int("http-port", 0, "")
+	fset.Bool("log-headers", false, "")
+	keys := map[string]string{"name": "T1", "allowed-ips": "T2", "http-port": "T3", "log-headers": "T4"}
+	if err := applyConfigFile(fset, p, keys); err != nil {
+		t.Fatal(err)
+	}
+	if *name != "123" || *ips != "192.168.1.0/24,fd00::/8" {
+		t.Errorf("reloaded name=%q allowed-ips=%q", *name, *ips)
+	}
+}
+
+func TestWriteConfigFileNew(t *testing.T) {
+	for _, initial := range []string{"", "# only a comment\n"} {
+		p := filepath.Join(t.TempDir(), "sub", "just-dlna.yaml")
+		if initial != "" {
+			os.MkdirAll(filepath.Dir(p), 0o755)
+			os.WriteFile(p, []byte(initial), 0o644)
+		}
+		if err := writeConfigFile(p, map[string]*string{"name": ptr("TV")}, map[string]string{"name": "string"}); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(p)
+		if want := initial + "name: TV\n"; string(b) != want {
+			t.Errorf("got %q, want %q", b, want)
+		}
+	}
+}
+
+func TestConfigStore(t *testing.T) {
+	p := writeConfig(t, "name: From file\n")
+	fset := flag.NewFlagSet("test", flag.ContinueOnError)
+	fset.String("name", "", "server name [TEST_NAME]")
+	fset.String("log-level", "info", "")
+	fset.String("ifname", "", "")
+	fset.Int("http-port", 1338, "")
+	t.Setenv("TEST_LOG_LEVEL", "debug")
+	s := &configStore{
+		file:     p,
+		fset:     fset,
+		envKeys:  map[string]string{"name": "TEST_NAME", "log-level": "TEST_LOG_LEVEL", "ifname": "TEST_IFNAME", "http-port": "TEST_HTTP_PORT"},
+		order:    []string{"name", "log-level", "ifname", "http-port"},
+		explicit: map[string]bool{"ifname": true},
+	}
+	_, settings, err := s.Settings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := map[string]string{}
+	for _, st := range settings {
+		src[st.Name] = st.Source
+	}
+	want := map[string]string{"name": "file", "log-level": "env", "ifname": "flag", "http-port": "default"}
+	for k, v := range want {
+		if src[k] != v {
+			t.Errorf("%s source = %q, want %q", k, src[k], v)
+		}
+	}
+	if settings[0].Usage != "server name" || *settings[0].FileValue != "From file" {
+		t.Errorf("setting %+v", settings[0])
+	}
+
+	if err := s.Save(map[string]*string{"log-level": ptr("warn")}); err == nil {
+		t.Error("saving an env-locked setting succeeded")
+	}
+	if err := s.Save(map[string]*string{"http-port": ptr("99999")}); err == nil {
+		t.Error("invalid port accepted")
+	}
+	if err := s.Save(map[string]*string{"http-port": ptr("8080"), "name": nil}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "http-port: 8080\n" {
+		t.Errorf("file %q", b)
+	}
+}

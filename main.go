@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,26 +22,31 @@ import (
 	"github.com/anacrolix/dms/dlna/dms"
 	"github.com/lmittmann/tint"
 
+	"just-dlna/internal/admin"
 	"just-dlna/internal/cds"
 	"just-dlna/internal/library"
 	"just-dlna/internal/media"
 )
 
 type config struct {
-	configFile   string
-	mediaPath    string
-	friendlyName string
-	httpPort     int
-	mediaPort    int
-	cacheDir     string
-	subCharset   string
-	prefetchSubs bool
-	logLevel     string
-	dmsLogLevel  string
-	logFormat    string
-	logHeaders   bool
-	ifname       string
-	allowedIPs   string
+	configFile    string
+	mediaPath     string
+	friendlyName  string
+	httpPort      int
+	mediaPort     int
+	cacheDir      string
+	subCharset    string
+	prefetchSubs  bool
+	logLevel      string
+	dmsLogLevel   string
+	logFormat     string
+	logHeaders    bool
+	ifname        string
+	allowedIPs    string
+	uiPort        int
+	uiDir         string
+	configMissing bool         // configFile was given but does not exist yet
+	store         *configStore // settings for the admin UI
 }
 
 // env returns the environment variable key, or def when unset.
@@ -73,19 +79,27 @@ func envBool(key string, def bool) bool {
 // defaults. Only these flags can be set from the config file.
 var envKeys = map[string]string{}
 
+// flagOrder lists the names in envKeys in definition order.
+var flagOrder []string
+
+func registerKey(name, key string) {
+	envKeys[name] = key
+	flagOrder = append(flagOrder, name)
+}
+
 func stringFlag(p *string, name, key, def, usage string) {
 	flag.StringVar(p, name, env(key, def), usage+" ["+key+"]")
-	envKeys[name] = key
+	registerKey(name, key)
 }
 
 func intFlag(p *int, name, key string, def int, usage string) {
 	flag.IntVar(p, name, envInt(key, def), usage+" ["+key+"]")
-	envKeys[name] = key
+	registerKey(name, key)
 }
 
 func boolFlag(p *bool, name, key string, def bool, usage string) {
 	flag.BoolVar(p, name, envBool(key, def), usage+" ["+key+"]")
-	envKeys[name] = key
+	registerKey(name, key)
 }
 
 // parseConfig reads settings with this precedence: command line flags,
@@ -110,15 +124,34 @@ func parseConfig() (config, error) {
 	boolFlag(&c.logHeaders, "log-headers", "LOG_HEADERS", false, "dump DLNA HTTP headers to stderr (client debugging)")
 	stringFlag(&c.ifname, "ifname", "IFNAME", "", "only announce on this network interface (default: all)")
 	stringFlag(&c.allowedIPs, "allowed-ips", "ALLOWED_IPS", "0.0.0.0/0,::/0", "comma separated client networks allowed to connect")
+	intFlag(&c.uiPort, "ui-port", "UI_PORT", 1340, "web UI port, 0 disables the web UI")
+	stringFlag(&c.uiDir, "ui-dir", "UI_DIR", "ui/dist", "folder with the built web UI")
 	flag.Parse()
+
+	explicit := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 
 	if c.configFile == "" {
 		c.configFile = findConfigFile()
 	}
 	if c.configFile != "" {
-		if err := applyConfigFile(flag.CommandLine, c.configFile, envKeys); err != nil {
+		// A given but missing file is created when settings are saved.
+		if _, err := os.Stat(c.configFile); errors.Is(err, fs.ErrNotExist) {
+			c.configMissing = true
+		} else if err := applyConfigFile(flag.CommandLine, c.configFile, envKeys); err != nil {
 			return c, err
 		}
+	}
+	file := c.configFile
+	if file == "" {
+		file = defaultConfigFile()
+	}
+	c.store = &configStore{
+		file:     file,
+		fset:     flag.CommandLine,
+		envKeys:  envKeys,
+		order:    flagOrder,
+		explicit: explicit,
 	}
 	return c, nil
 }
@@ -200,10 +233,28 @@ func main() {
 		os.Exit(2)
 	}
 	slog.SetDefault(logger)
-	if err := run(c, logger); err != nil {
+	err = run(c, logger)
+	if errors.Is(err, errRestart) {
+		err = restart(logger)
+	}
+	if err != nil {
 		logger.Error("fatal", "error", err)
 		os.Exit(1)
 	}
+}
+
+// errRestart is returned by run when the web UI asked for a restart.
+var errRestart = errors.New("restart requested")
+
+// restart replaces the process with a fresh copy of itself, which reads the
+// saved config file again. Arguments and environment are kept.
+func restart(logger *slog.Logger) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("restart: %w", err)
+	}
+	logger.Info("restarting")
+	return fmt.Errorf("restart: %w", syscall.Exec(exe, os.Args, os.Environ()))
 }
 
 func run(c config, logger *slog.Logger) error {
@@ -277,6 +328,32 @@ func run(c config, logger *slog.Logger) error {
 		return fmt.Errorf("dms init: %w", err)
 	}
 
+	restartc := make(chan struct{}, 1)
+	var adminSrv *http.Server
+	var adminLn net.Listener
+	if c.uiPort != 0 {
+		adm, err := admin.New(c.mediaPath, c.uiDir, c.store, func() {
+			select {
+			case restartc <- struct{}{}:
+			default:
+			}
+		}, logger.With("component", "admin"))
+		if err != nil {
+			return err
+		}
+		defer adm.Close()
+		adminLn, err = net.Listen("tcp", ":"+strconv.Itoa(c.uiPort))
+		if err != nil {
+			return fmt.Errorf("web UI listener: %w", err)
+		}
+		// No write timeout: uploads and downloads of large videos take long.
+		adminSrv = &http.Server{
+			Handler:           adm.Handler(),
+			ReadHeaderTimeout: 30 * time.Second,
+			ErrorLog:          slog.NewLogLogger(logger.With("component", "admin-http").Handler(), slog.LevelWarn),
+		}
+	}
+
 	httpSrv := &http.Server{
 		Handler:           mediaSrv.Handler(),
 		ReadHeaderTimeout: 30 * time.Second,
@@ -294,14 +371,25 @@ func run(c config, logger *slog.Logger) error {
 		"prefetch_subs", c.prefetchSubs,
 		"interfaces", interfaceNames(dmsSrv.Interfaces),
 		"allowed_ips", c.allowedIPs,
+		"ui_port", c.uiPort,
 	)
+	if c.configMissing {
+		logger.Warn("config file not found, it is created when settings are saved in the web UI", "config", c.configFile)
+	}
 
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
 	go func() {
 		if err := httpSrv.Serve(mediaLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- fmt.Errorf("media server: %w", err)
 		}
 	}()
+	if adminSrv != nil {
+		go func() {
+			if err := adminSrv.Serve(adminLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errc <- fmt.Errorf("web UI server: %w", err)
+			}
+		}()
+	}
 	go func() {
 		if err := dmsSrv.Run(); err != nil {
 			errc <- fmt.Errorf("dlna server: %w", err)
@@ -314,12 +402,19 @@ func run(c config, logger *slog.Logger) error {
 	case <-ctx.Done():
 		logger.Info("shutting down")
 	case err = <-errc:
+	case <-restartc:
+		err = errRestart
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if serr := httpSrv.Shutdown(shutdownCtx); serr != nil {
 		logger.Warn("media server shutdown", "error", serr)
+	}
+	if adminSrv != nil {
+		if serr := adminSrv.Shutdown(shutdownCtx); serr != nil {
+			logger.Warn("web UI server shutdown", "error", serr)
+		}
 	}
 	if cerr := dmsSrv.Close(); cerr != nil {
 		logger.Debug("dlna server close", "error", cerr)
