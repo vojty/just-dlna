@@ -15,8 +15,8 @@ services:
     #   IFNAME: eth0         # announce on one interface only
     volumes:
       # Writable so files can be uploaded and managed in the web UI. The
-      # container runs as uid 1000, which must be able to write to the
-      # folder. Add :ro to make it read-only.
+      # container runs as PUID:PGID (default 1000:1000), which must be able to
+      # write to the folder. Add :ro to make it read-only.
       - /path/to/videos:/media
       - just-dlna-cache:/cache
       - just-dlna-config:/config

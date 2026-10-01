@@ -1,0 +1,99 @@
+# CasaOS app definition. Import it in CasaOS: App Store -> Custom Install ->
+# Import (docker-compose), then adjust the media folder if needed.
+name: just-dlna
+services:
+  just-dlna:
+    image: ghcr.io/vojty/just-dlna:latest
+    container_name: just-dlna
+    # SSDP discovery uses multicast, so the container needs the host network.
+    # Ports are not mapped: DLNA uses 1338/1339 (TCP) and 1900 (UDP), the web
+    # UI is on 1340, all directly on the server's IP.
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      # just-dlna runs as this user and group. /DATA/Media is owned by root
+      # and filled by apps running as root, so run as root too: the web UI can
+      # then upload, rename and delete anything there. The web UI has no login,
+      # so anyone on the network can do the same.
+      PUID: "0"
+      PGID: "0"
+      TZ: Europe/Prague
+      FRIENDLY_NAME: Just DLNA
+    volumes:
+      # Shared with Jellyfin and managed in the web UI. Add `read_only: true`
+      # under this entry to only stream from it.
+      - type: bind
+        source: /DATA/Media
+        target: /media
+      # Created by Docker if missing; the container hands them to PUID:PGID
+      # on every start.
+      - type: bind
+        source: /DATA/AppData/just-dlna/cache
+        target: /cache
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /DATA/AppData/just-dlna/config
+        target: /config
+        bind:
+          create_host_path: true
+    x-casaos:
+      envs:
+        - container: PUID
+          description:
+            en_us: User ID just-dlna runs as (0 = root, owner of /DATA/Media)
+        - container: PGID
+          description:
+            en_us: Group ID just-dlna runs as
+        - container: TZ
+          description:
+            en_us: Time zone
+        - container: FRIENDLY_NAME
+          description:
+            en_us: Server name shown on the TV (locked in the web UI while set here)
+      volumes:
+        - container: /media
+          description:
+            en_us: Video folder (shared with Jellyfin) served over DLNA and managed in the web UI
+        - container: /cache
+          description:
+            en_us: Converted subtitles cache
+        - container: /config
+          description:
+            en_us: Settings saved by the web UI
+      ports:
+        - container: "1340"
+          description:
+            en_us: Web UI
+        - container: "1338"
+          description:
+            en_us: DLNA control
+        - container: "1339"
+          description:
+            en_us: Video and subtitle streaming
+        - container: "1900"
+          protocol: udp
+          description:
+            en_us: SSDP discovery
+
+
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: just-dlna
+  category: Media
+  author: vojty
+  developer: vojty
+  title:
+    en_us: just-dlna
+  tagline:
+    en_us: DLNA server that streams videos as they are, with subtitles
+  description:
+    en_us: >-
+      Streams video files from a folder byte-for-byte over DLNA, no
+      transcoding and no library database. Subtitles (external and embedded)
+      are delivered to the TV as SRT. The web UI manages settings and files.
+  index: /
+  port_map: "1340"
+  scheme: http

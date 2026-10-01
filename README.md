@@ -137,8 +137,9 @@ The image builds the web UI and serves it on port 1340. Settings saved there go
 to `/config/just-dlna.yaml` (`CONFIG_FILE`), so keep `/config` on a volume. The
 image sets `MEDIA_PATH=/media` and `CACHE_DIR=/cache`, so those two are locked
 in the web UI; the same goes for any `-e` variable you add. The container runs
-as uid 1000, which needs write access to the media folder for uploads; mount it
-with `:ro` if you do not want that.
+just-dlna as `PUID`:`PGID` (default 1000:1000) and hands `/cache` and `/config`
+to that user on start. That user needs write access to the media folder for
+uploads; mount it with `:ro` if you do not want that.
 
 ## Layout
 
