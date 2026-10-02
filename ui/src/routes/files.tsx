@@ -10,7 +10,7 @@ import {
   parentPath,
   type FileEntry,
   type FileKind,
-} from "../api";
+} from "../api.ts";
 import {
   Button,
   buttonClass,
@@ -21,9 +21,9 @@ import {
   Modal,
   notify,
   notifyError,
-} from "../components/ui";
-import { queries } from "../queries";
-import { enqueue } from "../uploads";
+} from "../components/ui.tsx";
+import { queries } from "../queries.ts";
+import { enqueue } from "../uploads.ts";
 
 const dateFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",

@@ -1,13 +1,11 @@
 // Client for the just-dlna admin API (internal/admin). Requests and types are
 // generated from its OpenAPI document into ./client, see scripts/gen-api.sh.
 
-import * as sdk from "./client";
-import type { DownloadFileData, ErrorModel, FileEntry, Setting, UploadFilesData } from "./client";
+import * as sdk from "./client/index.ts";
+import type { DownloadFileData, ErrorModel, FileEntry, UploadFilesData } from "./client/index.ts";
 
-export type { Config, FileEntry, Health, Listing, Setting } from "./client";
+export type { Config, FileEntry, Setting } from "./client/index.ts";
 export type FileKind = FileEntry["kind"];
-export type SettingType = Setting["type"];
-export type SettingSource = Setting["source"];
 
 export class ApiError extends Error {
   constructor(

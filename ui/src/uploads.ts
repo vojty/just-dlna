@@ -1,8 +1,8 @@
 // Upload queue kept outside React so uploads continue while navigating.
 import { useSyncExternalStore } from "react";
-import { ApiError, errorText, uploadFile } from "./api";
+import { ApiError, errorText, uploadFile } from "./api.ts";
 
-export type UploadStatus = "queued" | "uploading" | "done" | "error" | "cancelled" | "conflict";
+type UploadStatus = "queued" | "uploading" | "done" | "error" | "cancelled" | "conflict";
 
 export interface Upload {
   id: number;

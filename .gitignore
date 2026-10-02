@@ -1,5 +1,5 @@
 /just-dlna
 node_modules/
 /ui/dist/
-/ui/src/routeTree.gen.ts
 just-dlna.yaml
+.vscode

@@ -5,5 +5,4 @@ docker-compose.yml
 just-dlna.yaml
 node_modules
 ui/dist
-ui/src/routeTree.gen.ts
 casaos-compose.yml

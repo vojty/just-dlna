@@ -1,8 +1,8 @@
 import { Toast } from "@base-ui/react/toast";
 import type { QueryClient } from "@tanstack/react-query";
 import { createRootRouteWithContext, Link, Outlet } from "@tanstack/react-router";
-import { UploadQueue } from "../components/UploadQueue";
-import { cx, Toasts, toastManager } from "../components/ui";
+import { UploadQueue } from "../components/UploadQueue.tsx";
+import { cx, Toasts, toastManager } from "../components/ui.tsx";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: RootLayout,

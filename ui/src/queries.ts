@@ -1,7 +1,7 @@
 // TanStack Query options for the admin API. Route loaders prefetch with them
 // (queryClient.ensureQueryData) and components read with useSuspenseQuery.
 import { QueryClient, queryOptions } from "@tanstack/react-query";
-import { api } from "./api";
+import { api } from "./api.ts";
 
 export const queryClient = new QueryClient({
   defaultOptions: {

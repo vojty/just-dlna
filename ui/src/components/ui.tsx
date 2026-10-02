@@ -3,7 +3,7 @@ import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Dialog } from "@base-ui/react/dialog";
 import { Toast } from "@base-ui/react/toast";
 import type { ComponentProps, ReactNode } from "react";
-import { errorText } from "../api";
+import { errorText } from "../api.ts";
 
 export function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");

@@ -4,10 +4,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && tsc --noEmit",
+    "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint ui vite.config.ts",
+    "knip": "knip",
     "fmt": "oxfmt ui vite.config.ts",
     "fmt:check": "oxfmt --check ui vite.config.ts",
     "test": "vitest run --passWithNoTests"
@@ -26,6 +27,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "knip": "^6.39.0",
     "oxfmt": "^0.71.0",
     "oxlint": "^1.86.0",
     "tailwindcss": "^4.3.3",

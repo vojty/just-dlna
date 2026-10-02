@@ -59,9 +59,20 @@ jobs:
 
       - run: npm run lint
 
+      - run: npm run knip
+
       - run: npm run fmt:check
 
       - run: npm test
+
+      # ui/src/routeTree.gen.ts is generated from ui/src/routes by the router
+      # plugin during the build and committed; fail if it is out of date.
+      - run: npm run build
+
+      - name: Check route tree is committed
+        run: |
+          git add -N .
+          git diff --exit-code -- ui/src/routeTree.gen.ts
 
   # openapi.json and ui/src/client are generated from the Go admin API and
   # committed; fail if they are out of date (run scripts/gen-api.sh).

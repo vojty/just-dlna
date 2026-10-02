@@ -1,8 +1,8 @@
 import { Progress } from "@base-ui/react/progress";
 import { useState } from "react";
-import { formatSize } from "../api";
-import { cancel, clearFinished, dismiss, retry, useUploads, type Upload } from "../uploads";
-import { Button, cx, Icon } from "./ui";
+import { formatSize } from "../api.ts";
+import { cancel, clearFinished, dismiss, retry, useUploads, type Upload } from "../uploads.ts";
+import { Button, cx, Icon } from "./ui.tsx";
 
 /** Floating panel listing uploads with their progress. */
 export function UploadQueue() {

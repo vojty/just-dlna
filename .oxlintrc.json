@@ -12,6 +12,11 @@
     "react-perf/jsx-no-new-function-as-prop": "off",
     "react-perf/jsx-no-new-object-as-prop": "off",
     "react-perf/jsx-no-new-array-as-prop": "off",
-    "import/no-unassigned-import": "off"
+    "import/no-unassigned-import": "off",
+    "import/extensions": [
+      "error",
+      "ignorePackages",
+      { "checkTypeImports": true, "pattern": { "ts": "always", "tsx": "always" } }
+    ]
   }
 }

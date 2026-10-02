@@ -4,9 +4,9 @@ import { Switch } from "@base-ui/react/switch";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState, type FormEvent } from "react";
-import { api, errorText, type Config, type Setting } from "../api";
-import { Button, cx, Icon, inputClass, notify, notifyError } from "../components/ui";
-import { queries } from "../queries";
+import { api, errorText, type Config, type Setting } from "../api.ts";
+import { Button, cx, Icon, inputClass, notify, notifyError } from "../components/ui.tsx";
+import { queries } from "../queries.ts";
 
 export const Route = createFileRoute("/settings")({
   loader: ({ context }) => context.queryClient.ensureQueryData(queries.config()),
