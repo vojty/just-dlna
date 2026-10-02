@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -27,7 +26,6 @@ type Server struct {
 	Lib       *library.Library
 	Extractor *Extractor
 	Port      int
-	Allowed   []*net.IPNet // client networks allowed to connect
 	Logger    *slog.Logger
 }
 
@@ -197,11 +195,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w}
-		if s.allowed(r.RemoteAddr) {
-			next.ServeHTTP(sw, r)
-		} else {
-			s.httpError(sw, r, http.StatusForbidden, errors.New("client not in allowed networks"))
-		}
+		next.ServeHTTP(sw, r)
 		s.Logger.Debug("http",
 			"method", r.Method,
 			"url", r.URL.Path,
@@ -213,21 +207,4 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			"user_agent", r.UserAgent(),
 		)
 	})
-}
-
-func (s *Server) allowed(remoteAddr string) bool {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	if i := strings.IndexByte(host, '%'); i >= 0 {
-		host = host[:i]
-	}
-	ip := net.ParseIP(host)
-	for _, n := range s.Allowed {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
 }

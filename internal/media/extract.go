@@ -194,7 +194,9 @@ func (e *Extractor) ffmpeg(src string, args []string, outs []string) error {
 			}
 		}
 	}
-	full := append([]string{"-nostdin", "-hide_banner", "-loglevel", "error", "-y"}, args...)
+	// Inputs are files in the media folder; the whitelist stops crafted
+	// files (e.g. an HLS playlist named .srt) from making ffmpeg open URLs.
+	full := append([]string{"-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-protocol_whitelist", "file"}, args...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), extractTimeout)
 	defer cancel()

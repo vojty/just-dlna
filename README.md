@@ -1,33 +1,36 @@
 # just-dlna
 
-A small DLNA media server that streams video files from a folder **as they are**:
-no transcoding, no library database, no required folder layout or file naming.
-Built on [anacrolix/dms](https://github.com/anacrolix/dms) (SSDP discovery,
-UPnP ContentDirectory), with subtitle support added on top.
+A small DLNA server that streams videos from a folder **as they are**. No
+transcoding, no library database, no rules for folder or file names. Built on
+[anacrolix/dms](https://github.com/anacrolix/dms), with subtitle support added.
+
+> **Security is not a goal right now.** just-dlna is meant for a trusted home
+> network: there is no login, and anyone who can reach it can stream, upload,
+> rename and delete files in the media folder. Do not expose it to the
+> internet.
 
 ## Features
 
-- Mirrors the folder tree 1:1. Every folder is browsable, every video shows its
-  real file name. Folders without videos and hidden files (`.*`) are skipped.
-- Videos are streamed byte-for-byte with HTTP range (seek) support.
-- Subtitles, always delivered to the TV as SRT:
-  - **External files** (`.srt .vtt .ass .ssa .smi`) next to the video whose name
-    starts with the video name: `movie.srt`, `movie.en.srt`, `Movie_cz.forced.srt`.
-  - If a folder contains **only one video**, every subtitle file in that folder
-    and in a `Subs`/`Subtitles` sub-folder is attached, whatever its name.
-  - **Embedded** text tracks (MKV/MP4: SRT, ASS, WebVTT, mov_text) are extracted
-    with ffmpeg in a single pass and cached. Bitmap tracks (PGS, VobSub) are skipped.
-  - Non-UTF-8 subtitle files can be converted with `-sub-charset cp1250`.
-- Client profiles: LG webOS (subtitle `<res>` entries) and a generic profile
-  (also Samsung-style `CaptionInfo.sec`). See `internal/profile` to add more.
-- Web UI (port 1340) to change settings and to upload, rename, move, download
-  and delete files in the media folder.
+- Shows your folders exactly as they are on disk. Folders with no videos and
+  hidden files (`.*`) are skipped.
+- Streams videos unchanged, with seeking.
+- Sends subtitles to the TV as SRT:
+  - **Files next to the video** (`.srt .vtt .ass .ssa .smi`) whose name starts
+    with the video name, e.g. `movie.srt`, `movie.en.srt`.
+  - If a folder has **only one video**, all subtitle files in that folder and
+    in a `Sub`/`Subs`/`Subtitles` sub-folder are used.
+  - **Embedded** text subtitles (MKV/MP4) are extracted with ffmpeg and cached.
+    Image subtitles (PGS, VobSub) are not supported.
+  - Non-UTF-8 files can be converted, e.g. `-sub-charset cp1250`.
+- Client profiles for LG webOS and a generic one (also for Samsung). Add more in
+  `internal/profile`.
+- Web UI (port 1340) to change settings and manage files.
 
 ## Requirements
 
-- Go 1.25+ to build, Node.js 24+ to build the web UI.
-- `ffmpeg` and `ffprobe` in `PATH` at runtime (media details and subtitle
-  conversion). Without them videos and plain UTF-8 `.srt` files still work.
+- Go 1.27+ and Node.js 24+ to build.
+- `ffmpeg` and `ffprobe` in `PATH`. Without them, videos and UTF-8 `.srt` files
+  still work.
 
 ## Run
 
@@ -39,122 +42,113 @@ go run . -path ~/Videos -name "My DLNA"
 |---|---|---|---|
 | `-config` | `CONFIG_FILE` | see below | YAML config file |
 | `-path` | `MEDIA_PATH` | `.` | media folder |
-| `-name` | `FRIENDLY_NAME` | hostname based | name shown on the TV |
-| `-http-port` | `HTTP_PORT` | `1338` | DLNA control/description port |
-| `-media-port` | `MEDIA_PORT` | `1339` | video/subtitle streaming port |
+| `-name` | `FRIENDLY_NAME` | from hostname | name shown on the TV |
+| `-http-port` | `HTTP_PORT` | `1338` | DLNA control port |
+| `-media-port` | `MEDIA_PORT` | `1339` | streaming port |
 | `-cache` | `CACHE_DIR` | user cache dir | converted subtitles |
-| `-sub-charset` | `SUB_CHARSET` | | charset of non-UTF-8 subtitles, e.g. `cp1250` |
+| `-sub-charset` | `SUB_CHARSET` | | charset of non-UTF-8 subtitles |
 | `-prefetch-subs` | `PREFETCH_SUBS` | `true` | extract embedded subtitles when a video's details are opened |
 | `-ifname` | `IFNAME` | all | announce on one network interface |
-| `-allowed-ips` | `ALLOWED_IPS` | `0.0.0.0/0,::/0` | allowed client networks |
 | `-log-level` | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `-dms-log-level` | `DMS_LOG_LEVEL` | `info` | minimum level for the DLNA/SSDP library, on top of `-log-level` |
-| `-log-format` | `LOG_FORMAT` | `auto` | `auto`, `pretty`, `text` or `json` |
-| `-log-headers` | `LOG_HEADERS` | `false` | dump DLNA HTTP headers (client debugging) |
-| `-ui-port` | `UI_PORT` | `1340` | web UI port, `0` disables the web UI |
-| `-ui-dir` | `UI_DIR` | `ui/dist` | folder with the built web UI |
+| `-dms-log-level` | `DMS_LOG_LEVEL` | `info` | log level of the DLNA library |
+| `-log-format` | `LOG_FORMAT` | `auto` | `auto`, `pretty`, `text`, `json` |
+| `-log-headers` | `LOG_HEADERS` | `false` | log DLNA HTTP headers |
+| `-ui-port` | `UI_PORT` | `1340` | web UI port, `0` turns it off |
+| `-ui-dir` | `UI_DIR` | `ui/dist` | built web UI folder |
 
 ### Config file
 
-Settings can also be kept in a YAML file whose keys are the flag names. The
-file is loaded automatically from the first of these that exists, or from the
-path given with `-config` / `CONFIG_FILE`:
+You can put settings in a YAML file. Keys are the flag names. The first file
+found is used:
 
-1. `just-dlna.yaml` in the current directory
-2. `just-dlna/just-dlna.yaml` in the user config dir (`~/.config` on Linux,
+1. `-config` / `CONFIG_FILE`
+2. `just-dlna.yaml` in the current directory
+3. `just-dlna/just-dlna.yaml` in the user config dir (`~/.config` on Linux,
    `~/Library/Application Support` on macOS)
-3. `/etc/just-dlna/just-dlna.yaml`
+4. `/etc/just-dlna/just-dlna.yaml`
 
 ```yaml
 path: ~/Videos
 name: Home DLNA
 sub-charset: cp1250
-prefetch-subs: false
-allowed-ips: [192.168.1.0/24, fd00::/8]   # or "192.168.1.0/24,fd00::/8"
 ```
 
-[`just-dlna.example.yaml`](just-dlna.example.yaml) lists every setting with its default.
-Command line flags win over environment variables, which win over the file.
-Unknown keys are an error. A file given with `-config` that does not exist yet
-is created when settings are saved in the web UI; without any config file they
-are saved to `just-dlna/just-dlna.yaml` in the user config dir. `~` is expanded in `path` and `cache`; relative
-paths are relative to the current directory, not to the file.
+See [`just-dlna.example.yaml`](just-dlna.example.yaml) for all settings.
 
-Logs go to stderr via Go's `log/slog`. Use `-log-level debug` to see every
-browse request (with the client's User-Agent and chosen profile), every HTTP
-request, and ffmpeg/ffprobe commands with their errors. The DLNA library's own
-debug output (mostly SSDP send errors on interfaces without IPv6 multicast
-routes) stays hidden unless you also set `-dms-log-level debug`.
+- Flags win over env variables, env variables win over the file.
+- Unknown keys are an error.
+- `~` works in `path` and `cache`. Relative paths are relative to the current
+  directory.
+- With no config file, the web UI saves to the user config dir.
 
-`auto` prints short-timestamped, colored lines when stderr is a terminal
-(`pretty`; set `NO_COLOR` to disable colors) and logfmt (`text`) otherwise,
-e.g. under Docker or systemd, where full timestamps help log collectors.
+### Logs
+
+Logs go to stderr. Use `-log-level debug` to see requests, the detected client
+profile and ffmpeg commands. Add `-dms-log-level debug` for the DLNA library's
+own logs (mostly noise). `auto` format is colored on a terminal (turn off with
+`NO_COLOR`) and plain logfmt otherwise.
 
 ## Web UI
 
-The server also serves a small web app on `-ui-port` (default
-`http://<host>:1340`):
+Open `http://<host>:1340`.
 
-- **Files**: browse the media folder, upload files (drag and drop, with
-  progress and cancel), create folders, rename, move, download and delete.
-  Uploads are written to a hidden `.<name>.part` file and renamed when complete.
-- **Settings**: edit every setting. Changes are saved to the config file
-  (comments in it are kept) and applied with the **Restart now** button, which
-  restarts the server process in place. Settings given as command line flags or
-  environment variables take precedence over the file, so they are shown
-  locked.
+- **Files**: browse, upload (drag and drop), create folders, rename, move,
+  download and delete.
+- **Settings**: edit settings, save them to the config file, then click
+  **Restart now**. Settings set by flags or env variables are locked. The
+  media, cache and config folders can only be set by flags, env variables or
+  the config file, so the web UI can never reach files outside the media folder.
 
-There is no authentication yet: anyone who can reach the port can change
-settings and delete files. Keep it on a trusted network, or block the port with
-a firewall. The media folder must be writable for uploads.
+**There is no login.** Anyone who can reach the port can upload, rename and
+delete files in the media folder. Use it only on a trusted network.
 
-Build the UI once with `npm ci && npm run build` (output in `ui/dist`, served by
-the Go server). For UI development run the Go server and `npm run dev`; Vite
-serves the app with hot reload and proxies `/api` to `localhost:1340`. Other
-scripts: `npm run lint` (Oxlint), `npm run fmt` / `fmt:check` (Oxfmt),
-`npm run typecheck`.
-
-The UI is a Vite + React + TypeScript single page app using TanStack Router
-(file based routes in `ui/src/routes`), Tailwind CSS and Base UI. Its API is in
-`internal/admin`, built with Huma, which describes it in `openapi.json` (also
-served at `/api/openapi.json`, docs at `/api/docs`). The UI's typed client in
-`ui/src/client` is generated from it with hey-api. After changing the API run
-`scripts/gen-api.sh` (`scripts/run.sh` does this too) and commit the results;
-`go test ./...` fails while `openapi.json` is out of date.
+To keep other web sites from using it through your browser, the web UI
+rejects changes sent from other sites.
 
 ## Docker
 
-DLNA discovery uses UDP multicast (SSDP), so the container needs the host
-network. This works on Linux hosts; Docker Desktop on macOS/Windows does not
-pass multicast through.
+DLNA discovery uses multicast, so the container needs `--network host`. This
+works on Linux only, not on Docker Desktop for macOS/Windows.
 
 ```bash
-docker build -t just-dlna .
+docker run -d --name just-dlna --network host -v /path/to/videos:/media -v just-dlna-cache:/cache -v just-dlna-config:/config ghcr.io/vojty/just-dlna
 ```
+
+Or edit the media path in `docker-compose.yml` and run `docker compose up -d`.
+For CasaOS, import `casaos-compose.yml`.
+
+- Settings from the web UI are saved to `/config`, so keep it on a volume.
+- The app runs as `PUID`:`PGID` (default 1000:1000). This user needs write
+  access to the media folder for uploads. Mount it with `:ro` for read-only.
+
+## Development
 
 ```bash
-docker run -d --name just-dlna --network host -v /path/to/videos:/media -v just-dlna-cache:/cache -v just-dlna-config:/config just-dlna
+scripts/run.sh -path ~/Videos
 ```
 
-Or edit the volume path in `docker-compose.yml` and run `docker compose up -d`.
-The image builds the web UI and serves it on port 1340. Settings saved there go
-to `/config/just-dlna.yaml` (`CONFIG_FILE`), so keep `/config` on a volume. The
-image sets `MEDIA_PATH=/media` and `CACHE_DIR=/cache`, so those two are locked
-in the web UI; the same goes for any `-e` variable you add. The container runs
-just-dlna as `PUID`:`PGID` (default 1000:1000) and hands `/cache` and `/config`
-to that user on start. That user needs write access to the media folder for
-uploads; mount it with `:ro` if you do not want that.
+This starts the Go server and the Vite dev server with hot reload.
+
+- Build the UI: `npm ci && npm run build` (output in `ui/dist`).
+- Checks: `go test ./...`, `npm run typecheck`, `npm run lint`, `npm run knip`,
+  `npm run fmt:check`.
+- After changing the API, run `scripts/gen-api.sh` and commit `openapi.json`
+  and `ui/src/client`. CI fails if they are out of date. API docs are at
+  `/api/docs`.
+
+The UI uses Vite, React, TypeScript, TanStack Router, Tailwind CSS and Base UI.
+The API uses Huma.
 
 ## Layout
 
-- `main.go` – flags, logging, wiring, shutdown
-- `config.go` – YAML config file loading
+- `main.go` – flags, logging, startup
+- `config.go` – config file loading
+- `settings.go` – web UI settings, saving the config file
 - `internal/library` – folder listing, subtitle discovery, ffprobe cache
-- `internal/cds` – ContentDirectory Browse hooks for dms
-- `internal/media` – video/subtitle HTTP server, ffmpeg subtitle extraction
-- `internal/profile` – per-client subtitle handling (LG, generic)
+- `internal/cds` – DLNA browse handling
+- `internal/media` – streaming server, subtitle extraction
+- `internal/profile` – per-client subtitle handling
 - `internal/didl` – DIDL-Lite XML types
-- `internal/admin` – web UI server and its JSON API (settings, file management)
-- `cmd/openapi` – prints the API's OpenAPI document (`scripts/gen-api.sh`)
-- `settings.go` – settings shown in the web UI, saving the config file
-- `ui/` – web UI sources (tooling config and `package.json` in the repo root)
+- `internal/admin` – web UI server and API
+- `cmd/openapi` – prints the OpenAPI document
+- `ui/` – web UI sources

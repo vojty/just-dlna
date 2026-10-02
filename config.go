@@ -45,11 +45,13 @@ func findConfigFile() string {
 	return ""
 }
 
+// removedSettings are ignored in config files written by older versions.
+var removedSettings = map[string]bool{"allowed-ips": true}
+
 // applyConfigFile sets flags from a YAML file whose keys are flag names:
 //
 //	path: ~/Videos
 //	name: Home DLNA
-//	allowed-ips: [192.168.1.0/24, fd00::/8]
 //
 // Values from the command line or a flag's environment variable (envKeys
 // maps flag names to them) take precedence over the file.
@@ -73,6 +75,9 @@ func applyConfigFile(fset *flag.FlagSet, path string, envKeys map[string]string)
 	slices.Sort(names)
 	for _, name := range names {
 		key, ok := envKeys[name]
+		if removedSettings[name] {
+			continue
+		}
 		if !ok {
 			return fmt.Errorf("config %s: unknown setting %q", path, name)
 		}

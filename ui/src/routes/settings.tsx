@@ -17,12 +17,10 @@ export const Route = createFileRoute("/settings")({
 });
 
 const labels: Record<string, string> = {
-  path: "Media folder",
   name: "Server name",
   "http-port": "DLNA port",
   "media-port": "Streaming port",
   "ui-port": "Web UI port",
-  cache: "Cache folder",
   "sub-charset": "Subtitle charset",
   "prefetch-subs": "Prefetch embedded subtitles",
   "log-level": "Log level",
@@ -30,12 +28,11 @@ const labels: Record<string, string> = {
   "log-format": "Log format",
   "log-headers": "Log DLNA headers",
   ifname: "Network interface",
-  "allowed-ips": "Allowed client networks",
 };
 
 const groups: { title: string; names: string[] }[] = [
-  { title: "General", names: ["name", "path", "cache"] },
-  { title: "Network", names: ["http-port", "media-port", "ui-port", "ifname", "allowed-ips"] },
+  { title: "General", names: ["name"] },
+  { title: "Network", names: ["http-port", "media-port", "ui-port", "ifname"] },
   { title: "Subtitles", names: ["sub-charset", "prefetch-subs"] },
   { title: "Logging", names: ["log-level", "dms-log-level", "log-format", "log-headers"] },
 ];

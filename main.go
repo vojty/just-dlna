@@ -42,7 +42,6 @@ type config struct {
 	logFormat     string
 	logHeaders    bool
 	ifname        string
-	allowedIPs    string
 	uiPort        int
 	uiDir         string
 	configMissing bool         // configFile was given but does not exist yet
@@ -123,7 +122,6 @@ func parseConfig() (config, error) {
 	stringFlag(&c.logFormat, "log-format", "LOG_FORMAT", "auto", "auto, pretty, text or json; auto is pretty on a terminal, text otherwise")
 	boolFlag(&c.logHeaders, "log-headers", "LOG_HEADERS", false, "dump DLNA HTTP headers to stderr (client debugging)")
 	stringFlag(&c.ifname, "ifname", "IFNAME", "", "only announce on this network interface (default: all)")
-	stringFlag(&c.allowedIPs, "allowed-ips", "ALLOWED_IPS", "0.0.0.0/0,::/0", "comma separated client networks allowed to connect")
 	intFlag(&c.uiPort, "ui-port", "UI_PORT", 1340, "web UI port, 0 disables the web UI")
 	stringFlag(&c.uiDir, "ui-dir", "UI_DIR", "ui/dist", "folder with the built web UI")
 	flag.Parse()
@@ -258,10 +256,6 @@ func restart(logger *slog.Logger) error {
 }
 
 func run(c config, logger *slog.Logger) error {
-	allowed, err := parseNets(c.allowedIPs)
-	if err != nil {
-		return err
-	}
 	dmsLevel, err := parseLevel(c.dmsLogLevel)
 	if err != nil {
 		return err
@@ -280,7 +274,6 @@ func run(c config, logger *slog.Logger) error {
 		Lib:       lib,
 		Extractor: extractor,
 		Port:      c.mediaPort,
-		Allowed:   allowed,
 		Logger:    logger.With("component", "media"),
 	}
 	browser := &cds.Browser{
@@ -298,6 +291,17 @@ func run(c config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("dlna listener: %w", err)
 	}
+	// dms listens on loopback only, behind a proxy that passes just the
+	// UPnP endpoints (see dmsproxy.go).
+	dmsInner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("dlna listener: %w", err)
+	}
+	dlnaProxy := &http.Server{
+		Handler:           newDMSProxy(dmsInner.Addr().String()),
+		ReadHeaderTimeout: 30 * time.Second,
+		ErrorLog:          slog.NewLogLogger(logger.With("component", "dlna-http").Handler(), slog.LevelWarn),
+	}
 
 	var ifaces []net.Interface
 	if c.ifname != "" {
@@ -309,7 +313,7 @@ func run(c config, logger *slog.Logger) error {
 	}
 
 	dmsSrv := &dms.Server{
-		HTTPConn:               dlnaLn,
+		HTTPConn:               publicAddrListener{dmsInner, dlnaLn.Addr()},
 		FriendlyName:           c.friendlyName,
 		Interfaces:             ifaces,
 		RootObjectPath:         c.mediaPath,
@@ -319,7 +323,7 @@ func run(c config, logger *slog.Logger) error {
 		NoTranscode:            true,
 		NoProbe:                true,
 		IgnoreHidden:           true,
-		AllowedIpNets:          allowed,
+		AllowedIpNets:          allNets,
 		LogHeaders:             c.logHeaders,
 		NotifyInterval:         30 * time.Second,
 		Logger:                 slog.New(minLevelHandler{logger.Handler(), dmsLevel}).With("component", "dms"),
@@ -370,14 +374,18 @@ func run(c config, logger *slog.Logger) error {
 		"cache", c.cacheDir,
 		"prefetch_subs", c.prefetchSubs,
 		"interfaces", interfaceNames(dmsSrv.Interfaces),
-		"allowed_ips", c.allowedIPs,
 		"ui_port", c.uiPort,
 	)
 	if c.configMissing {
 		logger.Warn("config file not found, it is created when settings are saved in the web UI", "config", c.configFile)
 	}
 
-	errc := make(chan error, 3)
+	errc := make(chan error, 4)
+	go func() {
+		if err := dlnaProxy.Serve(dlnaLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errc <- fmt.Errorf("dlna proxy: %w", err)
+		}
+	}()
 	go func() {
 		if err := httpSrv.Serve(mediaLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- fmt.Errorf("media server: %w", err)
@@ -411,6 +419,9 @@ func run(c config, logger *slog.Logger) error {
 	if serr := httpSrv.Shutdown(shutdownCtx); serr != nil {
 		logger.Warn("media server shutdown", "error", serr)
 	}
+	if serr := dlnaProxy.Shutdown(shutdownCtx); serr != nil {
+		logger.Warn("dlna proxy shutdown", "error", serr)
+	}
 	if adminSrv != nil {
 		if serr := adminSrv.Shutdown(shutdownCtx); serr != nil {
 			logger.Warn("web UI server shutdown", "error", serr)
@@ -428,20 +439,4 @@ func interfaceNames(ifs []net.Interface) []string {
 		names[i] = ifi.Name
 	}
 	return names
-}
-
-func parseNets(s string) ([]*net.IPNet, error) {
-	var nets []*net.IPNet
-	for _, part := range strings.Split(s, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		_, n, err := net.ParseCIDR(part)
-		if err != nil {
-			return nil, fmt.Errorf("allowed-ips: %w", err)
-		}
-		nets = append(nets, n)
-	}
-	return nets, nil
 }

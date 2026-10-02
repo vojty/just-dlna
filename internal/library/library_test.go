@@ -75,6 +75,11 @@ func TestCleanRejectsTraversal(t *testing.T) {
 			t.Errorf("Clean(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
+	for _, in := range []string{".hidden.mkv", "a/.git/config", ".x/../.y/b.mkv"} {
+		if got, err := Clean(in); err == nil {
+			t.Errorf("Clean(%q) = %q, want an error for a hidden path", in, got)
+		}
+	}
 }
 
 func TestListMirrorsTree(t *testing.T) {

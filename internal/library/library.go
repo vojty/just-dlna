@@ -91,7 +91,8 @@ func (l *Library) AbsPath(rel string) string {
 }
 
 // Clean normalises a client-supplied relative path and rejects anything that
-// would escape the root.
+// would escape the root or reach a hidden (dot) file or folder, which are
+// never listed.
 func Clean(p string) (string, error) {
 	p = path.Clean("/" + strings.TrimPrefix(p, "./"))
 	p = strings.TrimPrefix(p, "/")
@@ -100,6 +101,11 @@ func Clean(p string) (string, error) {
 	}
 	if !fs.ValidPath(p) {
 		return "", fmt.Errorf("invalid path %q", p)
+	}
+	for part := range strings.SplitSeq(p, "/") {
+		if hidden(part) {
+			return "", fmt.Errorf("invalid path %q: hidden files are not accessible", p)
+		}
 	}
 	return p, nil
 }

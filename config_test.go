@@ -23,14 +23,14 @@ func TestApplyConfigFile(t *testing.T) {
 	var prefetch bool
 	fset := flag.NewFlagSet("test", flag.ContinueOnError)
 	fset.StringVar(&name, "name", "", "")
-	fset.StringVar(&ips, "allowed-ips", "", "")
+	fset.StringVar(&ips, "tags", "", "")
 	fset.StringVar(&path, "path", ".", "")
 	fset.StringVar(&charset, "sub-charset", "", "")
 	fset.IntVar(&port, "http-port", 1338, "")
 	fset.BoolVar(&prefetch, "prefetch-subs", true, "")
 	keys := map[string]string{
 		"name":          "TEST_FRIENDLY_NAME",
-		"allowed-ips":   "TEST_ALLOWED_IPS",
+		"tags":          "TEST_TAGS",
 		"path":          "TEST_MEDIA_PATH",
 		"sub-charset":   "TEST_SUB_CHARSET",
 		"http-port":     "TEST_HTTP_PORT",
@@ -44,7 +44,7 @@ func TestApplyConfigFile(t *testing.T) {
 
 	cfg := writeConfig(t, `
 name: from file
-allowed-ips: [192.168.1.0/24, "fd00::/8"]
+tags: [192.168.1.0/24, "fd00::/8"]
 path: ~/Videos
 sub-charset: from file
 http-port: 8080
@@ -57,7 +57,7 @@ prefetch-subs: false
 	for _, tc := range []struct{ field, got, want string }{
 		{"name", name, "from flag"},
 		{"sub-charset", charset, "from env"},
-		{"allowed-ips", ips, "192.168.1.0/24,fd00::/8"},
+		{"tags", ips, "192.168.1.0/24,fd00::/8"},
 		{"path", path, filepath.Join(home, "Videos")},
 	} {
 		if tc.got != tc.want {
@@ -95,6 +95,9 @@ func TestApplyConfigFileEmpty(t *testing.T) {
 	if err := applyConfigFile(fset, writeConfig(t, "# nothing\n"), nil); err != nil {
 		t.Fatal(err)
 	}
+	if err := applyConfigFile(fset, writeConfig(t, "allowed-ips: [10.0.0.0/8]\n"), nil); err != nil {
+		t.Errorf("removed setting: %v", err)
+	}
 }
 
 func ptr(s string) *string { return &s }
@@ -105,12 +108,12 @@ path: ~/Videos # videos
 name: Old
 # log-level: info
 `)
-	types := map[string]string{"name": "string", "path": "string", "http-port": "int", "allowed-ips": "list", "log-headers": "bool"}
+	types := map[string]string{"name": "string", "path": "string", "http-port": "int", "tags": "list", "log-headers": "bool"}
 	err := writeConfigFile(p, map[string]*string{
 		"name":        ptr("123"),
 		"path":        nil,
 		"http-port":   ptr("8080"),
-		"allowed-ips": ptr("192.168.1.0/24, fd00::/8"),
+		"tags":        ptr("192.168.1.0/24, fd00::/8"),
 		"log-headers": ptr("1"),
 	}, types)
 	if err != nil {
@@ -118,7 +121,7 @@ name: Old
 	}
 	b, _ := os.ReadFile(p)
 	got := string(b)
-	for _, want := range []string{"# my settings", "# log-level: info", `name: "123"`, "http-port: 8080", "allowed-ips: [192.168.1.0/24, 'fd00::/8']", "log-headers: true"} {
+	for _, want := range []string{"# my settings", "# log-level: info", `name: "123"`, "http-port: 8080", "tags: [192.168.1.0/24, 'fd00::/8']", "log-headers: true"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
@@ -130,15 +133,15 @@ name: Old
 	// The written file must load back.
 	fset := flag.NewFlagSet("test", flag.ContinueOnError)
 	name := fset.String("name", "", "")
-	ips := fset.String("allowed-ips", "", "")
+	ips := fset.String("tags", "", "")
 	fset.Int("http-port", 0, "")
 	fset.Bool("log-headers", false, "")
-	keys := map[string]string{"name": "T1", "allowed-ips": "T2", "http-port": "T3", "log-headers": "T4"}
+	keys := map[string]string{"name": "T1", "tags": "T2", "http-port": "T3", "log-headers": "T4"}
 	if err := applyConfigFile(fset, p, keys); err != nil {
 		t.Fatal(err)
 	}
 	if *name != "123" || *ips != "192.168.1.0/24,fd00::/8" {
-		t.Errorf("reloaded name=%q allowed-ips=%q", *name, *ips)
+		t.Errorf("reloaded name=%q tags=%q", *name, *ips)
 	}
 }
 

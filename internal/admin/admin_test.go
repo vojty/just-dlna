@@ -150,6 +150,51 @@ func TestTraversal(t *testing.T) {
 	if _, err := os.Stat(outside); err != nil {
 		t.Errorf("file outside the media folder was moved: %v", err)
 	}
+
+	os.WriteFile(filepath.Join(media, ".secret"), []byte("secret"), 0o644)
+	if code, body := do(t, "GET", ts.URL+"/api/files/download?path=.secret", ""); code != 400 {
+		t.Errorf("download hidden file: %d %q, want 400", code, body)
+	}
+}
+
+func TestCrossOrigin(t *testing.T) {
+	ts, media, _, _ := newTestServer(t)
+	send := func(method, url string, header map[string]string) int {
+		t.Helper()
+		req, _ := http.NewRequest(method, url, strings.NewReader(`{"path":"x"}`))
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if resp, err := http.Get(ts.URL + "/api/files"); err == nil {
+		if v := resp.Header.Get("X-Content-Type-Options"); v != "nosniff" {
+			t.Errorf("X-Content-Type-Options = %q", v)
+		}
+		resp.Body.Close()
+	}
+
+	// Cross-site requests changing something are rejected, same-site ones not.
+	if code := send("POST", ts.URL+"/api/files/mkdir", map[string]string{"Sec-Fetch-Site": "cross-site"}); code != 403 {
+		t.Errorf("cross-site mkdir: %d, want 403", code)
+	}
+	if code := send("POST", ts.URL+"/api/restart", map[string]string{"Origin": "http://evil.example"}); code != 403 {
+		t.Errorf("cross-origin restart: %d, want 403", code)
+	}
+	if code := send("POST", ts.URL+"/api/files/mkdir", map[string]string{"Origin": ts.URL, "Sec-Fetch-Site": "same-origin"}); code != 201 {
+		t.Errorf("same-origin mkdir: %d, want 201", code)
+	}
+	if _, err := os.Stat(filepath.Join(media, "x")); err != nil {
+		t.Error(err)
+	}
+
 }
 
 func TestConfigAndUI(t *testing.T) {

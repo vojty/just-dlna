@@ -37,26 +37,15 @@ func validPort(min int) func(string) error {
 	}
 }
 
-func validDir(s string) error {
-	fi, err := os.Stat(expandHome(s))
-	if err != nil {
-		return err
-	}
-	if !fi.IsDir() {
-		return errors.New("not a directory")
-	}
-	return nil
-}
-
 // settingSpecs lists the settings editable in the admin UI. Flags missing
-// here (config, ui-dir) are not shown.
+// here are not shown. The web UI has no login, so settings choosing which
+// folders are read or written (config, path, cache, ui-dir) are left out:
+// anyone on the network could otherwise point the file manager at /.
 var settingSpecs = map[string]settingSpec{
-	"path":          {typ: "string", validate: validDir},
 	"name":          {typ: "string"},
 	"http-port":     {typ: "int", validate: validPort(1)},
 	"media-port":    {typ: "int", validate: validPort(1)},
 	"ui-port":       {typ: "int", validate: validPort(0)},
-	"cache":         {typ: "string"},
 	"sub-charset":   {typ: "string"},
 	"prefetch-subs": {typ: "bool"},
 	"log-level":     {typ: "enum", options: logLevels},
@@ -64,10 +53,6 @@ var settingSpecs = map[string]settingSpec{
 	"log-format":    {typ: "enum", options: []string{"auto", "pretty", "text", "json"}},
 	"log-headers":   {typ: "bool"},
 	"ifname":        {typ: "string", validate: validInterface},
-	"allowed-ips": {typ: "list", validate: func(s string) error {
-		_, err := parseNets(s)
-		return err
-	}},
 }
 
 func validInterface(s string) error {

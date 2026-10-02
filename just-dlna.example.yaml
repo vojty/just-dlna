@@ -27,9 +27,6 @@ path: ~/Videos                      # default: .
 # Only announce on this network interface.
 # ifname: eth0                      # default: all interfaces
 
-# Client networks allowed to connect: a list or a comma separated string.
-# allowed-ips: [192.168.1.0/24, fd00::/8]   # default: 0.0.0.0/0,::/0
-
 # Web UI port; 0 disables the web UI.
 # ui-port: 1340
 # Folder with the built web UI.

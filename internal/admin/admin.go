@@ -125,7 +125,24 @@ func (s *Server) Handler() http.Handler {
 		writeProblem(w, http.StatusNotFound, "not found")
 	})
 	mux.HandleFunc("/", s.serveUI)
-	return s.logRequests(mux)
+	// The UI has no login, so it must at least not be usable from other
+	// web sites: browsers reject cross-origin requests that change
+	// something.
+	cop := http.NewCrossOriginProtection()
+	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.Logger.Warn("cross-origin request rejected", "method", r.Method, "url", r.URL.String(), "origin", r.Header.Get("Origin"))
+		writeProblem(w, http.StatusForbidden, "cross-origin request rejected")
+	}))
+	return s.logRequests(noSniff(cop.Handler(mux)))
+}
+
+// noSniff stops browsers from guessing content types, so an uploaded HTML
+// file is never run as a page of the UI.
+func noSniff(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // OpenAPI returns the OpenAPI document of the API.
