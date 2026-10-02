@@ -1,13 +1,15 @@
 import { Field } from "@base-ui/react/field";
 import { Select } from "@base-ui/react/select";
 import { Switch } from "@base-ui/react/switch";
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState, type FormEvent } from "react";
 import { api, errorText, type Config, type Setting } from "../api";
 import { Button, cx, Icon, inputClass, notify, notifyError } from "../components/ui";
+import { queries } from "../queries";
 
 export const Route = createFileRoute("/settings")({
-  loader: () => api.config(),
+  loader: ({ context }) => context.queryClient.ensureQueryData(queries.config()),
   component: SettingsPage,
   errorComponent: ({ error }) => (
     <p className="text-sm text-red-600 dark:text-red-400">{errorText(error)}</p>
@@ -45,42 +47,42 @@ function savedValue(s: Setting): string {
 }
 
 function SettingsPage() {
-  const config = Route.useLoaderData();
+  const { data: config } = useSuspenseQuery(queries.config());
   // Remount the form with fresh state whenever the saved config changes.
   return <SettingsForm key={JSON.stringify(config)} config={config} />;
 }
 
 function SettingsForm({ config }: { config: Config }) {
-  const router = useRouter();
+  const queryClient = useQueryClient();
+  const refresh = () => queryClient.invalidateQueries(queries.config());
   const byName = useMemo(() => new Map(config.settings.map((s) => [s.name, s])), [config.settings]);
   const initial = useMemo(
     () => Object.fromEntries(config.settings.map((s) => [s.name, savedValue(s)])),
     [config.settings],
   );
   const [draft, setDraft] = useState<Record<string, string>>(initial);
-  const [saving, setSaving] = useState(false);
+  const saveConfig = useMutation({
+    mutationFn: api.saveConfig,
+    onSuccess: async () => {
+      notify("Settings saved", "success", "Restart the server to apply them.");
+      await refresh();
+    },
+    onError: (err) => notifyError(err, "Could not save settings"),
+  });
+  const saving = saveConfig.isPending;
   const [restarting, setRestarting] = useState(false);
 
   const changed = config.settings.filter((s) => !s.locked && draft[s.name] !== initial[s.name]);
   const set = (name: string, value: string) => setDraft((d) => ({ ...d, [name]: value }));
 
-  async function save(e: FormEvent) {
+  function save(e: FormEvent) {
     e.preventDefault();
     const updates: Record<string, string | null> = {};
     for (const s of changed) {
       // Keep the file minimal: a value equal to the default is removed from it.
       updates[s.name] = draft[s.name] === s.default ? null : draft[s.name];
     }
-    setSaving(true);
-    try {
-      await api.saveConfig(updates);
-      notify("Settings saved", "success", "Restart the server to apply them.");
-      await router.invalidate();
-    } catch (err) {
-      notifyError(err, "Could not save settings");
-    } finally {
-      setSaving(false);
-    }
+    saveConfig.mutate(updates);
   }
 
   async function restart() {
@@ -109,7 +111,7 @@ function SettingsForm({ config }: { config: Config }) {
       if (h && h.startedAt !== before?.startedAt) {
         setRestarting(false);
         notify("Server restarted");
-        await router.invalidate();
+        await refresh();
         return;
       }
     }

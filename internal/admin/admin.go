@@ -1,8 +1,10 @@
 // Package admin serves the web UI and its JSON API: server settings and
-// management of the files in the media folder.
+// management of the files in the media folder. The API is described by an
+// OpenAPI document (see OpenAPI) from which the UI's client is generated.
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -13,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
 )
 
 // Setting is one configuration value as shown in the UI. All values are
@@ -21,13 +26,39 @@ type Setting struct {
 	Name      string   `json:"name"`
 	Env       string   `json:"env"`
 	Usage     string   `json:"usage"`
-	Type      string   `json:"type"` // string, int, bool, enum or list
-	Options   []string `json:"options,omitempty"`
-	Value     string   `json:"value"`               // value of the running server
-	Default   string   `json:"default"`             // value without the config file
-	FileValue *string  `json:"fileValue,omitempty"` // value in the config file
-	Source    string   `json:"source"`              // flag, env, file or default
-	Locked    bool     `json:"locked"`              // set by flag/env, not editable
+	Type      string   `json:"type" enum:"string,int,bool,enum,list"`
+	Options   []string `json:"options,omitempty" nullable:"false" doc:"Allowed values of an enum setting."`
+	Value     string   `json:"value" doc:"Value of the running server."`
+	Default   string   `json:"default" doc:"Value without the config file."`
+	FileValue *string  `json:"fileValue,omitempty" doc:"Value in the config file, if set there."`
+	Source    string   `json:"source" enum:"flag,env,file,default"`
+	Locked    bool     `json:"locked" doc:"Set by a command line flag or environment variable, so not editable."`
+}
+
+// Config is the server configuration as shown in the UI.
+type Config struct {
+	File           string    `json:"file" doc:"Path of the config file."`
+	RestartPending bool      `json:"restartPending" doc:"Saved settings wait for a restart to apply."`
+	Settings       []Setting `json:"settings" nullable:"false"`
+}
+
+// ConfigUpdates maps setting names to new values, null removing the setting
+// from the config file.
+type ConfigUpdates map[string]*string
+
+// Schema describes the nullable values, which Huma cannot infer for maps.
+func (ConfigUpdates) Schema(huma.Registry) *huma.Schema {
+	return &huma.Schema{
+		Type:                 huma.TypeObject,
+		Description:          "Setting names mapped to new values; null removes a setting from the config file (back to default).",
+		AdditionalProperties: &huma.Schema{Type: huma.TypeString, Nullable: true},
+	}
+}
+
+// Health reports that the server is up.
+type Health struct {
+	OK        bool      `json:"ok"`
+	StartedAt time.Time `json:"startedAt"`
 }
 
 // ConfigStore reads and saves settings. Save takes setting names mapped to
@@ -89,66 +120,108 @@ func (s *Server) Close() error { return s.root.Close() }
 // Handler returns the HTTP handler with request logging.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/health", s.health)
-	mux.HandleFunc("GET /api/config", s.getConfig)
-	mux.HandleFunc("PUT /api/config", s.putConfig)
-	mux.HandleFunc("POST /api/restart", s.restart)
-	mux.HandleFunc("GET /api/files", s.listFiles)
-	mux.HandleFunc("DELETE /api/files", s.deleteFile)
-	mux.HandleFunc("POST /api/files/upload", s.upload)
-	mux.HandleFunc("POST /api/files/mkdir", s.mkdir)
-	mux.HandleFunc("POST /api/files/move", s.move)
-	mux.HandleFunc("GET /api/files/download", s.download)
+	s.register(newAPI(mux))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
-		s.fail(w, r, &HTTPError{http.StatusNotFound, errors.New("not found")})
+		writeProblem(w, http.StatusNotFound, "not found")
 	})
 	mux.HandleFunc("/", s.serveUI)
 	return s.logRequests(mux)
 }
 
-func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "startedAt": s.started})
+// OpenAPI returns the OpenAPI document of the API.
+func OpenAPI() *huma.OpenAPI {
+	api := newAPI(http.NewServeMux())
+	(&Server{}).register(api)
+	return api.OpenAPI()
 }
 
-func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
+func newAPI(mux *http.ServeMux) huma.API {
+	config := huma.DefaultConfig("just-dlna admin API", "1.0.0")
+	config.OpenAPIPath = "/api/openapi"
+	config.DocsPath = "/api/docs"
+	// No $schema links in the responses.
+	config.SchemasPath = ""
+	config.CreateHooks = nil
+	return humago.New(mux, config)
+}
+
+// response is an operation output with a JSON body.
+type response[T any] struct{ Body T }
+
+func (s *Server) register(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "getHealth",
+		Method:      http.MethodGet,
+		Path:        "/api/health",
+		Summary:     "Check that the server is up",
+		Tags:        []string{"server"},
+	}, s.health)
+	huma.Register(api, huma.Operation{
+		OperationID: "getConfig",
+		Method:      http.MethodGet,
+		Path:        "/api/config",
+		Summary:     "Get the settings",
+		Tags:        []string{"server"},
+	}, s.getConfig)
+	huma.Register(api, huma.Operation{
+		OperationID: "saveConfig",
+		Method:      http.MethodPut,
+		Path:        "/api/config",
+		Summary:     "Save settings to the config file",
+		Description: "The saved settings apply after a restart.",
+		Tags:        []string{"server"},
+		Errors:      []int{http.StatusBadRequest, http.StatusConflict},
+	}, s.putConfig)
+	huma.Register(api, huma.Operation{
+		OperationID:   "restart",
+		Method:        http.MethodPost,
+		Path:          "/api/restart",
+		Summary:       "Restart the server to apply saved settings",
+		Tags:          []string{"server"},
+		DefaultStatus: http.StatusAccepted,
+	}, s.restart)
+	s.registerFiles(api)
+}
+
+func (s *Server) health(ctx context.Context, _ *struct{}) (*response[Health], error) {
+	return &response[Health]{Health{OK: true, StartedAt: s.started}}, nil
+}
+
+func (s *Server) config(ctx context.Context) (*response[Config], error) {
 	file, settings, err := s.Config.Settings()
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
+	}
+	if settings == nil {
+		settings = []Setting{}
 	}
 	s.mu.Lock()
 	pending := s.restartPending
 	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"file":           file,
-		"restartPending": pending,
-		"settings":       settings,
-	})
+	return &response[Config]{Config{File: file, RestartPending: pending, Settings: settings}}, nil
 }
 
-func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
-	var updates map[string]*string
-	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
-		s.fail(w, r, Invalid(err))
-		return
+func (s *Server) getConfig(ctx context.Context, _ *struct{}) (*response[Config], error) {
+	return s.config(ctx)
+}
+
+func (s *Server) putConfig(ctx context.Context, in *struct{ Body ConfigUpdates }) (*response[Config], error) {
+	if err := s.Config.Save(in.Body); err != nil {
+		return nil, s.fail(ctx, err)
 	}
-	if err := s.Config.Save(updates); err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	if len(updates) > 0 {
+	if len(in.Body) > 0 {
 		s.mu.Lock()
 		s.restartPending = true
 		s.mu.Unlock()
 	}
-	s.getConfig(w, r)
+	return s.config(ctx)
 }
 
-func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
-	_ = http.NewResponseController(w).Flush()
+func (s *Server) restart(ctx context.Context, _ *struct{}) (*struct{}, error) {
 	s.Logger.Info("restart requested from the web UI")
-	go s.Restart()
+	// The request context ends once the response has been sent.
+	context.AfterFunc(ctx, s.Restart)
+	return nil, nil
 }
 
 // serveUI serves the built web UI, falling back to index.html for client
@@ -183,14 +256,19 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 	http.ServeFileFS(w, r, ui, p)
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
+// writeProblem writes an error in the format of the API's errors.
+func writeProblem(w http.ResponseWriter, status int, detail string) {
+	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(&huma.ErrorModel{
+		Title:  http.StatusText(status),
+		Status: status,
+		Detail: detail,
+	})
 }
 
-// fail reports err as a JSON {"error": "..."} response.
-func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
+// fail logs err and returns it as an API error with a matching status.
+func (s *Server) fail(ctx context.Context, err error) error {
 	status := http.StatusInternalServerError
 	var he *HTTPError
 	switch {
@@ -207,9 +285,16 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if status >= 500 {
 		level = slog.LevelError
 	}
-	s.Logger.Log(r.Context(), level, "request failed", "method", r.Method, "url", r.URL.String(), "status", status, "error", err)
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+	attrs := []any{"status", status, "error", err}
+	if r, ok := ctx.Value(requestKey{}).(*http.Request); ok {
+		attrs = append([]any{"method", r.Method, "url", r.URL.String()}, attrs...)
+	}
+	s.Logger.Log(ctx, level, "request failed", attrs...)
+	return huma.NewError(status, err.Error())
 }
+
+// requestKey is the context key of the request, for logging.
+type requestKey struct{}
 
 type statusWriter struct {
 	http.ResponseWriter
@@ -227,7 +312,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(sw, r)
+		next.ServeHTTP(sw, r.WithContext(context.WithValue(r.Context(), requestKey{}, r)))
 		s.Logger.Debug("http",
 			"method", r.Method,
 			"url", r.URL.String(),

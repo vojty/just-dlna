@@ -6,7 +6,7 @@
     "suspicious": "warn"
   },
   "env": { "browser": true },
-  "ignorePatterns": ["ui/dist", "ui/src/routeTree.gen.ts"],
+  "ignorePatterns": ["ui/dist", "ui/src/routeTree.gen.ts", "ui/src/client"],
   "rules": {
     "react/react-in-jsx-scope": "off",
     "react-perf/jsx-no-new-function-as-prop": "off",

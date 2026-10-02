@@ -1,6 +1,7 @@
 import { Menu } from "@base-ui/react/menu";
-import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useRef, useState, type FormEvent } from "react";
 import {
   api,
   errorText,
@@ -21,7 +22,8 @@ import {
   notify,
   notifyError,
 } from "../components/ui";
-import { enqueue, onUploadDone } from "../uploads";
+import { queries } from "../queries";
+import { enqueue } from "../uploads";
 
 const dateFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -37,7 +39,7 @@ export const Route = createFileRoute("/files")({
     path: typeof search.path === "string" && search.path !== "." ? search.path : undefined,
   }),
   loaderDeps: ({ search }) => ({ path: search.path ?? "." }),
-  loader: ({ deps }) => api.list(deps.path),
+  loader: ({ context, deps }) => context.queryClient.ensureQueryData(queries.files(deps.path)),
   component: FilesPage,
   errorComponent: ({ error }) => (
     <div className="flex flex-col items-start gap-3">
@@ -51,42 +53,41 @@ export const Route = createFileRoute("/files")({
 
 type Action = { kind: "mkdir" } | { kind: "rename" | "move" | "delete"; entry: FileEntry } | null;
 
+/** A mutation of the media folder that refreshes every folder listing after it succeeds. */
+function useFileMutation<T>(mutationFn: (vars: T) => Promise<unknown>) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["files"] }),
+    onError: (err) => notifyError(err),
+  });
+}
+
 function FilesPage() {
-  const listing = Route.useLoaderData();
-  const router = useRouter();
+  const { path } = Route.useLoaderDeps();
+  const { data: listing } = useSuspenseQuery(queries.files(path));
   const dir = listing.path;
   const [action, setAction] = useState<Action>(null);
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  // Show newly uploaded files in the open folder.
-  useEffect(
-    () =>
-      onUploadDone((u) => {
-        if (u.dir === dir) void router.invalidate();
-      }),
-    [dir, router],
-  );
+  const mkdir = useFileMutation(api.mkdir);
+  const move = useFileMutation(({ from, to }: { from: string; to: string }) => api.move(from, to));
+  const remove = useFileMutation(api.remove);
 
-  const refresh = () => router.invalidate();
   const close = () => setAction(null);
+  const done = (success: string) => ({
+    onSuccess: () => {
+      notify(success);
+      close();
+    },
+  });
 
   function upload(files: FileList | null) {
     if (!files || files.length === 0) return;
     const existing = new Set(listing.entries.map((e) => e.name));
     enqueue(dir, Array.from(files), existing);
-  }
-
-  async function run(work: () => Promise<unknown>, success: string) {
-    try {
-      await work();
-      notify(success);
-      close();
-      await refresh();
-    } catch (err) {
-      notifyError(err);
-    }
   }
 
   return (
@@ -186,7 +187,8 @@ function FilesPage() {
           description={`In ${dir === "." ? "the media folder" : dir}`}
           submitLabel="Create"
           initial=""
-          onSubmit={(name) => run(() => api.mkdir(joinPath(dir, name)), `Folder "${name}" created`)}
+          busy={mkdir.isPending}
+          onSubmit={(name) => mkdir.mutate(joinPath(dir, name), done(`Folder "${name}" created`))}
         />
       )}
       {action?.kind === "rename" && (
@@ -196,10 +198,11 @@ function FilesPage() {
           description={action.entry.name}
           submitLabel="Rename"
           initial={action.entry.name}
+          busy={move.isPending}
           onSubmit={(name) =>
-            run(
-              () => api.move(action.entry.path, joinPath(parentPath(action.entry.path), name)),
-              `Renamed to "${name}"`,
+            move.mutate(
+              { from: action.entry.path, to: joinPath(parentPath(action.entry.path), name) },
+              done(`Renamed to "${name}"`),
             )
           }
         />
@@ -208,10 +211,11 @@ function FilesPage() {
         <MoveDialog
           entry={action.entry}
           onClose={close}
+          busy={move.isPending}
           onMove={(target) =>
-            run(
-              () => api.move(action.entry.path, joinPath(target, action.entry.name)),
-              `Moved "${action.entry.name}"`,
+            move.mutate(
+              { from: action.entry.path, to: joinPath(target, action.entry.name) },
+              done(`Moved "${action.entry.name}"`),
             )
           }
         />
@@ -231,7 +235,7 @@ function FilesPage() {
         onConfirm={() => {
           if (action?.kind === "delete") {
             const { entry } = action;
-            void run(() => api.remove(entry.path), `Deleted "${entry.name}"`);
+            remove.mutate(entry.path, done(`Deleted "${entry.name}"`));
           }
         }}
       />
@@ -370,6 +374,7 @@ function NameDialog({
   description,
   submitLabel,
   initial,
+  busy,
   onSubmit,
 }: {
   onOpenChange: (open: boolean) => void;
@@ -377,20 +382,18 @@ function NameDialog({
   description: string;
   submitLabel: string;
   initial: string;
-  onSubmit: (name: string) => Promise<void>;
+  busy: boolean;
+  onSubmit: (name: string) => void;
 }) {
   const [name, setName] = useState(initial);
-  const [busy, setBusy] = useState(false);
 
   const trimmed = name.trim();
   const invalid = trimmed.includes("/") || trimmed.includes("\\") || trimmed.startsWith(".");
 
-  async function submit(e: FormEvent) {
+  function submit(e: FormEvent) {
     e.preventDefault();
-    if (!trimmed || invalid || trimmed === initial) return;
-    setBusy(true);
-    await onSubmit(trimmed);
-    setBusy(false);
+    if (busy || !trimmed || invalid || trimmed === initial) return;
+    onSubmit(trimmed);
   }
 
   return (
@@ -432,38 +435,21 @@ function NameDialog({
 /** Lets the user pick a target folder by browsing the media folder. */
 function MoveDialog({
   entry,
+  busy,
   onClose,
   onMove,
 }: {
   entry: FileEntry;
+  busy: boolean;
   onClose: () => void;
-  onMove: (targetDir: string) => Promise<void>;
+  onMove: (targetDir: string) => void;
 }) {
   const current = parentPath(entry.path);
   const [dir, setDir] = useState(current);
-  const [loaded, setLoaded] = useState<{ dir: string; folders: FileEntry[] } | null>(null);
-  const folders = loaded?.dir === dir ? loaded.folders : null;
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .list(dir)
-      .then((l) => {
-        if (!cancelled) {
-          setLoaded({ dir, folders: l.entries.filter((e) => e.isDir && e.path !== entry.path) });
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          notifyError(err);
-          setLoaded({ dir, folders: [] });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [dir, entry.path]);
+  const { data: folders, error } = useQuery({
+    ...queries.files(dir),
+    select: (l) => l.entries.filter((e) => e.isDir && e.path !== entry.path),
+  });
 
   return (
     <Modal
@@ -486,7 +472,9 @@ function MoveDialog({
           <span className="truncate font-medium">{dir === "." ? "Media" : `Media/${dir}`}</span>
         </div>
         <ul className="h-56 overflow-y-auto p-1">
-          {folders === null ? (
+          {error ? (
+            <li className="px-3 py-2 text-sm text-red-600 dark:text-red-400">{errorText(error)}</li>
+          ) : !folders ? (
             <li className="px-3 py-2 text-sm text-neutral-500">Loading…</li>
           ) : folders.length === 0 ? (
             <li className="px-3 py-2 text-sm text-neutral-500">No sub-folders</li>
@@ -508,15 +496,7 @@ function MoveDialog({
       </div>
       <div className="flex justify-end gap-2">
         <Button onClick={onClose}>Cancel</Button>
-        <Button
-          variant="primary"
-          disabled={busy || dir === current}
-          onClick={async () => {
-            setBusy(true);
-            await onMove(dir);
-            setBusy(false);
-          }}
-        >
+        <Button variant="primary" disabled={busy || dir === current} onClick={() => onMove(dir)}>
           Move here
         </Button>
       </div>

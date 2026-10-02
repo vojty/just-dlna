@@ -8,6 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 npm install
+scripts/gen-api.sh
 
 bin="${TMPDIR:-/tmp}/just-dlna-dev"
 go build -o "$bin" .

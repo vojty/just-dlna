@@ -130,8 +130,8 @@ func TestFiles(t *testing.T) {
 	if code, _ := do(t, "DELETE", api+"?path=", ""); code != 400 {
 		t.Errorf("delete root: %d, want 400", code)
 	}
-	if code, _ := do(t, "DELETE", api+"?path=missing", ""); code != 404 {
-		t.Errorf("delete missing: %d, want 404", code)
+	if code, body := do(t, "DELETE", api+"?path=missing", ""); code != 404 || !strings.Contains(body, `"detail":"`) {
+		t.Errorf("delete missing: %d %s, want 404 with a problem detail", code, body)
 	}
 }
 
@@ -179,5 +179,8 @@ func TestConfigAndUI(t *testing.T) {
 	}
 	if code, _ := do(t, "GET", ts.URL+"/api/nope", ""); code != 404 {
 		t.Errorf("unknown api: %d, want 404", code)
+	}
+	if code, body := do(t, "GET", ts.URL+"/api/openapi.json", ""); code != 200 || !strings.Contains(body, `"operationId":"listFiles"`) {
+		t.Errorf("openapi: %d", code)
 	}
 }

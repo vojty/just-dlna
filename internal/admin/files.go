@@ -1,7 +1,7 @@
 package admin
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,9 +11,11 @@ import (
 	"os"
 	"path"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"just-dlna/internal/library"
 )
@@ -21,11 +23,119 @@ import (
 // FileEntry is a file or folder in the media folder.
 type FileEntry struct {
 	Name    string    `json:"name"`
-	Path    string    `json:"path"` // slash-separated, relative to the media folder
+	Path    string    `json:"path" doc:"Slash-separated path relative to the media folder."`
 	IsDir   bool      `json:"isDir"`
 	Size    int64     `json:"size"`
 	ModTime time.Time `json:"modTime"`
-	Kind    string    `json:"kind"` // folder, video, subtitle or other
+	Kind    string    `json:"kind" enum:"folder,video,subtitle,other"`
+}
+
+// Listing is the content of a folder.
+type Listing struct {
+	Path    string      `json:"path" doc:"Path of the folder, \".\" for the media folder itself."`
+	Entries []FileEntry `json:"entries" nullable:"false"`
+}
+
+// Uploaded lists the files stored by an upload.
+type Uploaded struct {
+	Files []FileEntry `json:"files" nullable:"false"`
+}
+
+// MkdirRequest creates a folder.
+type MkdirRequest struct {
+	Path string `json:"path" doc:"Path of the new folder."`
+}
+
+// MoveRequest renames or moves a file or folder.
+type MoveRequest struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// pathParam is a path in the media folder given as a query parameter.
+type pathParam struct {
+	Path string `query:"path" doc:"Slash-separated path relative to the media folder; empty for the media folder itself."`
+}
+
+func (s *Server) registerFiles(api huma.API) {
+	notFound := []int{http.StatusBadRequest, http.StatusNotFound}
+	huma.Register(api, huma.Operation{
+		OperationID: "listFiles",
+		Method:      http.MethodGet,
+		Path:        "/api/files",
+		Summary:     "List a folder",
+		Tags:        []string{"files"},
+		Errors:      notFound,
+	}, s.listFiles)
+	huma.Register(api, huma.Operation{
+		OperationID:   "deleteFile",
+		Method:        http.MethodDelete,
+		Path:          "/api/files",
+		Summary:       "Delete a file or folder with its content",
+		Tags:          []string{"files"},
+		DefaultStatus: http.StatusNoContent,
+		Errors:        notFound,
+	}, s.deleteFile)
+	huma.Register(api, huma.Operation{
+		OperationID:   "uploadFiles",
+		Method:        http.MethodPost,
+		Path:          "/api/files/upload",
+		Summary:       "Upload files into a folder",
+		Tags:          []string{"files"},
+		DefaultStatus: http.StatusCreated,
+		Errors:        []int{http.StatusBadRequest, http.StatusNotFound, http.StatusConflict},
+	}, s.upload)
+	// Huma would read the whole body for a declared request body, so it is
+	// declared after registration and upload streams the parts itself.
+	api.OpenAPI().Paths["/api/files/upload"].Post.RequestBody = &huma.RequestBody{
+		Required: true,
+		Content: map[string]*huma.MediaType{
+			"multipart/form-data": {Schema: &huma.Schema{
+				Type:     huma.TypeObject,
+				Required: []string{"file"},
+				Properties: map[string]*huma.Schema{
+					"file": {
+						Type:  huma.TypeArray,
+						Items: &huma.Schema{Type: huma.TypeString, Format: "binary"},
+					},
+				},
+			}},
+		},
+	}
+	huma.Register(api, huma.Operation{
+		OperationID:   "createFolder",
+		Method:        http.MethodPost,
+		Path:          "/api/files/mkdir",
+		Summary:       "Create a folder",
+		Tags:          []string{"files"},
+		DefaultStatus: http.StatusCreated,
+		Errors:        []int{http.StatusBadRequest, http.StatusNotFound, http.StatusConflict},
+	}, s.mkdir)
+	huma.Register(api, huma.Operation{
+		OperationID: "moveFile",
+		Method:      http.MethodPost,
+		Path:        "/api/files/move",
+		Summary:     "Rename or move a file or folder",
+		Tags:        []string{"files"},
+		Errors:      []int{http.StatusBadRequest, http.StatusNotFound, http.StatusConflict},
+	}, s.move)
+	huma.Register(api, huma.Operation{
+		OperationID: "downloadFile",
+		Method:      http.MethodGet,
+		Path:        "/api/files/download",
+		Summary:     "Download a file",
+		Description: "Supports range requests.",
+		Tags:        []string{"files"},
+		Errors:      notFound,
+		Responses: map[string]*huma.Response{
+			"200": {
+				Description: "The file content.",
+				Content: map[string]*huma.MediaType{
+					"application/octet-stream": {Schema: &huma.Schema{Type: huma.TypeString, Format: "binary"}},
+				},
+			},
+		},
+	}, s.download)
 }
 
 func kind(name string, isDir bool) string {
@@ -75,16 +185,14 @@ func newEntry(rel string, fi fs.FileInfo) FileEntry {
 	}
 }
 
-func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
-	dir, err := cleanPath(r.URL.Query().Get("path"))
+func (s *Server) listFiles(ctx context.Context, in *pathParam) (*response[Listing], error) {
+	dir, err := cleanPath(in.Path)
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
 	des, err := fs.ReadDir(s.root.FS(), dir)
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
 	entries := []FileEntry{}
 	for _, de := range des {
@@ -105,7 +213,7 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 		}
 		return strings.ToLower(a.Name) < strings.ToLower(b.Name)
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"path": dir, "entries": entries})
+	return &response[Listing]{Listing{Path: dir, Entries: entries}}, nil
 }
 
 func (s *Server) requireDir(dir string) error {
@@ -124,25 +232,33 @@ func (s *Server) exists(rel string) bool {
 	return err == nil
 }
 
+type uploadInput struct {
+	Path      string `query:"path" doc:"Folder to upload into; empty for the media folder itself."`
+	Overwrite bool   `query:"overwrite" doc:"Replace existing files."`
+
+	req *http.Request
+}
+
+// Resolve keeps the request so upload can stream its multipart body.
+func (in *uploadInput) Resolve(ctx huma.Context) []error {
+	in.req, _ = humago.Unwrap(ctx)
+	return nil
+}
+
 // upload stores the files of a multipart request in the folder given by the
 // path query parameter. Each file is written to a hidden temporary file first
 // and renamed when complete, so clients never see partial uploads.
-func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	dir, err := cleanPath(q.Get("path"))
+func (s *Server) upload(ctx context.Context, in *uploadInput) (*response[Uploaded], error) {
+	dir, err := cleanPath(in.Path)
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
-	overwrite, _ := strconv.ParseBool(q.Get("overwrite"))
 	if err := s.requireDir(dir); err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
-	mr, err := r.MultipartReader()
+	mr, err := in.req.MultipartReader()
 	if err != nil {
-		s.fail(w, r, Invalid(err))
-		return
+		return nil, s.fail(ctx, Invalid(err))
 	}
 	uploaded := []FileEntry{}
 	for {
@@ -151,23 +267,21 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			s.fail(w, r, Invalid(err))
-			return
+			return nil, s.fail(ctx, Invalid(err))
 		}
 		if part.FileName() == "" {
 			part.Close()
 			continue
 		}
-		e, err := s.saveUpload(dir, part.FileName(), part, overwrite)
+		e, err := s.saveUpload(dir, part.FileName(), part, in.Overwrite)
 		part.Close()
 		if err != nil {
-			s.fail(w, r, err)
-			return
+			return nil, s.fail(ctx, err)
 		}
 		s.Logger.Info("uploaded", "path", e.Path, "size", e.Size)
 		uploaded = append(uploaded, e)
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"files": uploaded})
+	return &response[Uploaded]{Uploaded{Files: uploaded}}, nil
 }
 
 func (s *Server) saveUpload(dir, name string, src io.Reader, overwrite bool) (FileEntry, error) {
@@ -202,22 +316,8 @@ func (s *Server) saveUpload(dir, name string, src io.Reader, overwrite bool) (Fi
 	return newEntry(rel, fi), nil
 }
 
-func decodeJSON(r *http.Request, v any) error {
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		return Invalid(err)
-	}
-	return nil
-}
-
-func (s *Server) mkdir(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Path string `json:"path"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	rel, err := cleanPath(req.Path)
+func (s *Server) mkdir(ctx context.Context, in *struct{ Body MkdirRequest }) (*response[FileEntry], error) {
+	rel, err := cleanPath(in.Body.Path)
 	if err == nil && rel == "." {
 		err = Invalid(errors.New("missing folder name"))
 	}
@@ -228,37 +328,25 @@ func (s *Server) mkdir(w http.ResponseWriter, r *http.Request) {
 		err = s.root.Mkdir(rel, 0o755)
 	}
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
 	fi, err := s.root.Stat(rel)
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
 	s.Logger.Info("folder created", "path", rel)
-	writeJSON(w, http.StatusCreated, newEntry(rel, fi))
+	return &response[FileEntry]{newEntry(rel, fi)}, nil
 }
 
 // move renames or moves a file or folder.
-func (s *Server) move(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		From string `json:"from"`
-		To   string `json:"to"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	from, err := cleanPath(req.From)
+func (s *Server) move(ctx context.Context, in *struct{ Body MoveRequest }) (*response[FileEntry], error) {
+	from, err := cleanPath(in.Body.From)
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
-	to, err := cleanPath(req.To)
+	to, err := cleanPath(in.Body.To)
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
 	switch {
 	case from == "." || to == ".":
@@ -280,20 +368,18 @@ func (s *Server) move(w http.ResponseWriter, r *http.Request) {
 		err = s.root.Rename(from, to)
 	}
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
 	fi, err := s.root.Stat(to)
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
 	s.Logger.Info("moved", "from", from, "to", to)
-	writeJSON(w, http.StatusOK, newEntry(to, fi))
+	return &response[FileEntry]{newEntry(to, fi)}, nil
 }
 
-func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
-	rel, err := cleanPath(r.URL.Query().Get("path"))
+func (s *Server) deleteFile(ctx context.Context, in *pathParam) (*struct{}, error) {
+	rel, err := cleanPath(in.Path)
 	if err == nil && rel == "." {
 		err = Invalid(errors.New("the media folder itself cannot be deleted"))
 	}
@@ -304,34 +390,33 @@ func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
 		err = s.root.RemoveAll(rel)
 	}
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
 	s.Logger.Info("deleted", "path", rel)
-	w.WriteHeader(http.StatusNoContent)
+	return nil, nil
 }
 
-func (s *Server) download(w http.ResponseWriter, r *http.Request) {
-	rel, err := cleanPath(r.URL.Query().Get("path"))
+func (s *Server) download(ctx context.Context, in *pathParam) (*huma.StreamResponse, error) {
+	rel, err := cleanPath(in.Path)
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
 	f, err := s.root.Open(rel)
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		return nil, s.fail(ctx, err)
 	}
-	defer f.Close()
 	fi, err := f.Stat()
+	if err == nil && fi.IsDir() {
+		err = Invalid(fmt.Errorf("%q is a folder", rel))
+	}
 	if err != nil {
-		s.fail(w, r, err)
-		return
+		f.Close()
+		return nil, s.fail(ctx, err)
 	}
-	if fi.IsDir() {
-		s.fail(w, r, Invalid(fmt.Errorf("%q is a folder", rel)))
-		return
-	}
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": fi.Name()}))
-	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
+	return &huma.StreamResponse{Body: func(hctx huma.Context) {
+		defer f.Close()
+		r, w := humago.Unwrap(hctx)
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": fi.Name()}))
+		http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
+	}}, nil
 }

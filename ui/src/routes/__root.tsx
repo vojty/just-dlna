@@ -1,9 +1,10 @@
 import { Toast } from "@base-ui/react/toast";
-import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
+import type { QueryClient } from "@tanstack/react-query";
+import { createRootRouteWithContext, Link, Outlet } from "@tanstack/react-router";
 import { UploadQueue } from "../components/UploadQueue";
 import { cx, Toasts, toastManager } from "../components/ui";
 
-export const Route = createRootRoute({
+export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: RootLayout,
   notFoundComponent: () => <p className="text-sm text-neutral-500">Page not found.</p>,
 });

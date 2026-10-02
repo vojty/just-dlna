@@ -1,48 +1,13 @@
-// Typed client for the just-dlna admin API (internal/admin).
+// Client for the just-dlna admin API (internal/admin). Requests and types are
+// generated from its OpenAPI document into ./client, see scripts/gen-api.sh.
 
-export type FileKind = "folder" | "video" | "subtitle" | "other";
+import * as sdk from "./client";
+import type { DownloadFileData, ErrorModel, FileEntry, Setting, UploadFilesData } from "./client";
 
-export interface FileEntry {
-  name: string;
-  /** Slash-separated path relative to the media folder. */
-  path: string;
-  isDir: boolean;
-  size: number;
-  modTime: string;
-  kind: FileKind;
-}
-
-export interface Listing {
-  /** "." for the media folder itself. */
-  path: string;
-  entries: FileEntry[];
-}
-
-export type SettingType = "string" | "int" | "bool" | "enum" | "list";
-export type SettingSource = "flag" | "env" | "file" | "default";
-
-export interface Setting {
-  name: string;
-  env: string;
-  usage: string;
-  type: SettingType;
-  options?: string[];
-  /** Value of the running server. */
-  value: string;
-  /** Value without the config file. */
-  default: string;
-  /** Value in the config file, if set there. */
-  fileValue?: string;
-  source: SettingSource;
-  /** Set by a command line flag or environment variable. */
-  locked: boolean;
-}
-
-export interface Config {
-  file: string;
-  restartPending: boolean;
-  settings: Setting[];
-}
+export type { Config, FileEntry, Health, Listing, Setting } from "./client";
+export type FileKind = FileEntry["kind"];
+export type SettingType = Setting["type"];
+export type SettingSource = Setting["source"];
 
 export class ApiError extends Error {
   constructor(
@@ -53,47 +18,53 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method,
-      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch {
+type Result<T> = { data: T | undefined; error: unknown; response?: Response };
+
+/** Returns the data of a generated SDK call, throwing ApiError on failure. */
+async function call<T>(result: Promise<Result<T>>): Promise<T> {
+  const { data, error, response } = await result;
+  if (!response) {
     throw new ApiError(0, "Cannot reach the server");
   }
-  if (!res.ok) {
-    throw new ApiError(res.status, await errorMessage(res));
+  if (error !== undefined || !response.ok) {
+    throw new ApiError(
+      response.status,
+      problemText(error) ?? (response.statusText || `HTTP ${response.status}`),
+    );
   }
-  return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+  return data as T;
 }
 
-async function errorMessage(res: Response): Promise<string> {
-  try {
-    const data = (await res.json()) as { error?: string };
-    return data.error ?? res.statusText;
-  } catch {
-    return res.statusText || `HTTP ${res.status}`;
-  }
+/** Returns the message of an API error (application/problem+json). */
+function problemText(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const p = error as ErrorModel;
+  const details = p.errors?.map((e) => e.message).filter(Boolean) ?? [];
+  const text = [p.detail ?? p.title, ...details].filter(Boolean).join(": ");
+  return text || undefined;
 }
 
-const q = (path: string) => encodeURIComponent(path);
+const query = (params: Record<string, string | boolean | undefined>) => {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined) q.set(k, String(v));
+  }
+  return q.toString();
+};
 
 export const api = {
-  health: () => request<{ ok: boolean; startedAt: string }>("GET", "/api/health"),
-  config: () => request<Config>("GET", "/api/config"),
+  health: () => call(sdk.getHealth()),
+  config: () => call(sdk.getConfig()),
   /** Saves settings; null removes a setting from the file (back to default). */
-  saveConfig: (updates: Record<string, string | null>) =>
-    request<Config>("PUT", "/api/config", updates),
-  restart: () => request<void>("POST", "/api/restart"),
+  saveConfig: (updates: Record<string, string | null>) => call(sdk.saveConfig({ body: updates })),
+  restart: () => call(sdk.restart()).then(() => undefined),
 
-  list: (path: string) => request<Listing>("GET", `/api/files?path=${q(path)}`),
-  mkdir: (path: string) => request<FileEntry>("POST", "/api/files/mkdir", { path }),
-  move: (from: string, to: string) => request<FileEntry>("POST", "/api/files/move", { from, to }),
-  remove: (path: string) => request<void>("DELETE", `/api/files?path=${q(path)}`),
-  downloadUrl: (path: string) => `/api/files/download?path=${q(path)}`,
+  list: (path: string) => call(sdk.listFiles({ query: { path } })),
+  mkdir: (path: string) => call(sdk.createFolder({ body: { path } })),
+  move: (from: string, to: string) => call(sdk.moveFile({ body: { from, to } })),
+  remove: (path: string) => call(sdk.deleteFile({ query: { path } })).then(() => undefined),
+  downloadUrl: (path: string) =>
+    `/api/files/download?${query({ path } satisfies DownloadFileData["query"])}`,
 };
 
 export interface UploadOptions {
@@ -109,7 +80,8 @@ export interface UploadOptions {
 export function uploadFile(dir: string, file: File, opts: UploadOptions = {}): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const url = `/api/files/upload?path=${q(dir)}${opts.overwrite ? "&overwrite=1" : ""}`;
+    const params: UploadFilesData["query"] = { path: dir, overwrite: opts.overwrite || undefined };
+    const url = `/api/files/upload?${query(params)}`;
     xhr.open("POST", url);
     xhr.responseType = "json";
     xhr.upload.addEventListener("progress", (e) => {
@@ -119,8 +91,7 @@ export function uploadFile(dir: string, file: File, opts: UploadOptions = {}): P
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve();
       } else {
-        const data = xhr.response as { error?: string } | null;
-        reject(new ApiError(xhr.status, data?.error ?? `HTTP ${xhr.status}`));
+        reject(new ApiError(xhr.status, problemText(xhr.response) ?? `HTTP ${xhr.status}`));
       }
     });
     xhr.addEventListener("error", () => reject(new ApiError(0, "Upload failed: network error")));

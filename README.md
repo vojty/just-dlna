@@ -116,7 +116,11 @@ scripts: `npm run lint` (Oxlint), `npm run fmt` / `fmt:check` (Oxfmt),
 
 The UI is a Vite + React + TypeScript single page app using TanStack Router
 (file based routes in `ui/src/routes`), Tailwind CSS and Base UI. Its API is in
-`internal/admin`.
+`internal/admin`, built with Huma, which describes it in `openapi.json` (also
+served at `/api/openapi.json`, docs at `/api/docs`). The UI's typed client in
+`ui/src/client` is generated from it with hey-api. After changing the API run
+`scripts/gen-api.sh` (`scripts/run.sh` does this too) and commit the results;
+`go test ./...` fails while `openapi.json` is out of date.
 
 ## Docker
 
@@ -151,5 +155,6 @@ uploads; mount it with `:ro` if you do not want that.
 - `internal/profile` – per-client subtitle handling (LG, generic)
 - `internal/didl` – DIDL-Lite XML types
 - `internal/admin` – web UI server and its JSON API (settings, file management)
+- `cmd/openapi` – prints the API's OpenAPI document (`scripts/gen-api.sh`)
 - `settings.go` – settings shown in the web UI, saving the config file
 - `ui/` – web UI sources (tooling config and `package.json` in the repo root)
