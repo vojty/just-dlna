@@ -48,7 +48,7 @@ go run . -path ~/Videos -name "My DLNA"
 | `-cache` | `CACHE_DIR` | user cache dir | converted subtitles |
 | `-sub-charset` | `SUB_CHARSET` | | charset of non-UTF-8 subtitles |
 | `-prefetch-subs` | `PREFETCH_SUBS` | `true` | extract embedded subtitles when a video's details are opened |
-| `-ifname` | `IFNAME` | all | announce on one network interface |
+| `-ifname` | `IFNAME` | LAN interfaces | comma-separated interfaces to announce on, e.g. `wlo1,enp1s0` |
 | `-log-level` | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `-dms-log-level` | `DMS_LOG_LEVEL` | `info` | log level of the DLNA library |
 | `-log-format` | `LOG_FORMAT` | `auto` | `auto`, `pretty`, `text`, `json` |
@@ -121,6 +121,23 @@ For CasaOS, import `casaos-compose.yml`.
 - The app runs as `PUID`:`PGID` (default 1000:1000). This user needs write
   access to the media folder for uploads. Mount it with `:ro` for read-only.
 
+### Host network caveats
+
+With the host network, just-dlna sees every interface of the host. Without
+`-ifname` / `IFNAME` it announces only on interfaces that look like a LAN: up,
+multicast-capable, Ethernet or Wi-Fi, with an IPv4 or global/ULA IPv6 address.
+It skips loopback, point-to-point links and these:
+
+- **Thread** (`wpan*`, 802.15.4 link types): an OpenThread Border Router (Home
+  Assistant, Matter) creates `wpan0`. SSDP announcements flood the slow mesh
+  and can crash Thread devices.
+- **Docker and VMs** (`docker*`, `br-*`, `veth*`, `virbr*`): no TVs there.
+- **VPNs** (`tun*`, `tap*`, `wg*`, `zt*`, `tailscale*`).
+
+The log lists each interface with why it was chosen or skipped. Still, set
+`IFNAME` to your LAN interface (e.g. `eth0` or `wlo1`, see `ip -br addr`) on
+such hosts, so a new virtual interface can never be picked up.
+
 ## Development
 
 ```bash
@@ -147,6 +164,7 @@ The API uses Huma.
 - `internal/library` – folder listing, subtitle discovery, ffprobe cache
 - `internal/cds` – DLNA browse handling
 - `internal/media` – streaming server, subtitle extraction
+- `internal/netif` – choosing the network interfaces to announce on
 - `internal/profile` – per-client subtitle handling
 - `internal/didl` – DIDL-Lite XML types
 - `internal/admin` – web UI server and API

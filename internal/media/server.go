@@ -27,6 +27,9 @@ type Server struct {
 	Extractor *Extractor
 	Port      int
 	Logger    *slog.Logger
+	// Interfaces limits which interfaces' addresses BaseURL may put into
+	// URLs; nil allows all.
+	Interfaces []string
 }
 
 // Handler returns the HTTP handler with request logging.
@@ -74,7 +77,7 @@ func (s *Server) serveVideo(w http.ResponseWriter, r *http.Request) {
 	h.Set("contentFeatures.dlna.org", ContentFeatures)
 	h.Set("transferMode.dlna.org", transferMode(r, "Streaming"))
 	h.Set("Accept-Ranges", "bytes")
-	if subs, err := s.Subtitles(BaseURL(r.Host, s.Port), rel); err == nil {
+	if subs, err := s.Subtitles(s.BaseURL(r.Host), rel); err == nil {
 		prof.VideoHeaders(h, r, subs)
 	}
 	s.Logger.Debug("serving video", "path", rel, "profile", prof.Name(), "range", r.Header.Get("Range"))

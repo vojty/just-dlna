@@ -12,7 +12,7 @@ services:
     #   FRIENDLY_NAME: "Home DLNA"
     #   LOG_LEVEL: debug     # for troubleshooting
     #   SUB_CHARSET: cp1250  # charset of non-UTF-8 subtitle files
-    #   IFNAME: eth0         # announce on one interface only
+    #   IFNAME: eth0         # announce only on these interfaces (comma separated)
     volumes:
       # Writable so files can be uploaded and managed in the web UI. The
       # container runs as PUID:PGID (default 1000:1000), which must be able to

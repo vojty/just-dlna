@@ -24,8 +24,9 @@ path: ~/Videos                      # default: .
 # Extract embedded subtitles when a client opens a video's details.
 # prefetch-subs: true
 
-# Only announce on this network interface.
-# ifname: eth0                      # default: all interfaces
+# Only announce on these network interfaces.
+# ifname: [eth0, wlo1]              # default: LAN interfaces, skipping Thread
+#                                   # (wpan*), Docker, VM and VPN ones
 
 # Web UI port; 0 disables the web UI.
 # ui-port: 1340

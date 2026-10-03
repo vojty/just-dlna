@@ -16,6 +16,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"just-dlna/internal/admin"
+	"just-dlna/internal/netif"
 )
 
 // settingSpec describes how the admin UI edits a setting.
@@ -52,15 +53,24 @@ var settingSpecs = map[string]settingSpec{
 	"dms-log-level": {typ: "enum", options: logLevels},
 	"log-format":    {typ: "enum", options: []string{"auto", "pretty", "text", "json"}},
 	"log-headers":   {typ: "bool"},
-	"ifname":        {typ: "string", validate: validInterface},
+	"ifname":        {typ: "list", validate: validInterfaces},
 }
 
-func validInterface(s string) error {
-	if s == "" {
-		return nil
+// validInterfaces checks a comma-separated list of interface names.
+func validInterfaces(s string) error {
+	return checkInterfaces(s, func(name string) error {
+		_, err := net.InterfaceByName(name)
+		return err
+	})
+}
+
+func checkInterfaces(s string, lookup func(string) error) error {
+	for _, name := range netif.ParseNames(s) {
+		if err := lookup(name); err != nil {
+			return fmt.Errorf("interface %q: %w", name, err)
+		}
 	}
-	_, err := net.InterfaceByName(s)
-	return err
+	return nil
 }
 
 func (sp settingSpec) check(v string) error {

@@ -99,7 +99,7 @@ func (b *Browser) object(e library.Entry, host string, prof profile.Profile, pre
 			Class:      didl.ClassFolder,
 		}
 	}
-	base := media.BaseURL(host, b.Media.Port)
+	base := b.Media.BaseURL(host)
 	video := didl.Res{
 		ProtocolInfo: fmt.Sprintf("http-get:*:%s:%s", e.MIME, media.ContentFeatures),
 		Size:         e.Size,

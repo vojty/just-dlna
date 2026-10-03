@@ -26,6 +26,7 @@ import (
 	"just-dlna/internal/cds"
 	"just-dlna/internal/library"
 	"just-dlna/internal/media"
+	"just-dlna/internal/netif"
 )
 
 type config struct {
@@ -121,7 +122,7 @@ func parseConfig() (config, error) {
 	stringFlag(&c.dmsLogLevel, "dms-log-level", "DMS_LOG_LEVEL", "info", "minimum level for the DLNA/SSDP library logs, on top of -log-level")
 	stringFlag(&c.logFormat, "log-format", "LOG_FORMAT", "auto", "auto, pretty, text or json; auto is pretty on a terminal, text otherwise")
 	boolFlag(&c.logHeaders, "log-headers", "LOG_HEADERS", false, "dump DLNA HTTP headers to stderr (client debugging)")
-	stringFlag(&c.ifname, "ifname", "IFNAME", "", "only announce on this network interface (default: all)")
+	stringFlag(&c.ifname, "ifname", "IFNAME", "", "comma-separated network interfaces to announce on, e.g. eth0,wlo1 (default: LAN interfaces, skipping Thread, Docker and VPN ones)")
 	intFlag(&c.uiPort, "ui-port", "UI_PORT", 1340, "web UI port, 0 disables the web UI")
 	stringFlag(&c.uiDir, "ui-dir", "UI_DIR", "ui/dist", "folder with the built web UI")
 	flag.Parse()
@@ -303,19 +304,20 @@ func run(c config, logger *slog.Logger) error {
 		ErrorLog:          slog.NewLogLogger(logger.With("component", "dlna-http").Handler(), slog.LevelWarn),
 	}
 
-	var ifaces []net.Interface
-	if c.ifname != "" {
-		ifi, err := net.InterfaceByName(c.ifname)
-		if err != nil {
-			return fmt.Errorf("interface %q: %w", c.ifname, err)
-		}
-		ifaces = []net.Interface{*ifi}
+	ifaces, err := selectInterfaces(c.ifname, logger)
+	if err != nil {
+		return err
+	}
+	mediaSrv.Interfaces = netif.Names(ifaces)
+	dmsIfaces := make([]net.Interface, len(ifaces))
+	for i, ifi := range ifaces {
+		dmsIfaces[i] = ifi.Interface
 	}
 
 	dmsSrv := &dms.Server{
 		HTTPConn:               publicAddrListener{dmsInner, dlnaLn.Addr()},
 		FriendlyName:           c.friendlyName,
-		Interfaces:             ifaces,
+		Interfaces:             dmsIfaces, // non-nil: dms uses all interfaces for nil
 		RootObjectPath:         c.mediaPath,
 		FS:                     lib.FS(),
 		OnBrowseDirectChildren: browser.BrowseDirectChildren,
@@ -373,7 +375,7 @@ func run(c config, logger *slog.Logger) error {
 		"media_port", c.mediaPort,
 		"cache", c.cacheDir,
 		"prefetch_subs", c.prefetchSubs,
-		"interfaces", interfaceNames(dmsSrv.Interfaces),
+		"interfaces", netif.Names(ifaces),
 		"ui_port", c.uiPort,
 	)
 	if c.configMissing {
@@ -433,10 +435,30 @@ func run(c config, logger *slog.Logger) error {
 	return err
 }
 
-func interfaceNames(ifs []net.Interface) []string {
-	names := make([]string, len(ifs))
-	for i, ifi := range ifs {
-		names[i] = ifi.Name
+// selectInterfaces picks the interfaces for SSDP announcements, see
+// netif.Select, and logs the choice.
+func selectInterfaces(ifname string, logger *slog.Logger) ([]netif.Interface, error) {
+	all, err := netif.List()
+	if err != nil {
+		return nil, fmt.Errorf("network interfaces: %w", err)
 	}
-	return names
+	names := netif.ParseNames(ifname)
+	chosen, skipped, err := netif.Select(all, names)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range skipped {
+		logger.Info("interface skipped", "interface", s.Name, "reason", s.Reason)
+	}
+	for _, ifi := range chosen {
+		if r := netif.Check(ifi); r != "" {
+			logger.Warn("announcing on an interface that does not look like a LAN", "interface", ifi.Name, "reason", r)
+		} else {
+			logger.Info("interface chosen", "interface", ifi.Name)
+		}
+	}
+	if len(chosen) == 0 {
+		logger.Warn("no LAN interface found, clients cannot discover the server; set -ifname / IFNAME")
+	}
+	return chosen, nil
 }

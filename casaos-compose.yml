@@ -19,6 +19,12 @@ services:
       PGID: "0"
       TZ: Europe/Prague
       FRIENDLY_NAME: Just DLNA
+      # LAN interface(s) to announce on, comma separated, e.g. wlo1 or eth0
+      # (see `ip -br addr`). Empty picks LAN-like interfaces and skips
+      # Thread (wpan0), Docker and VPN ones; setting it is safer on hosts
+      # with a Thread border router. Being set here, even empty, locks it in
+      # the web UI.
+      IFNAME: ""
     volumes:
       # Shared with Jellyfin and managed in the web UI. Add `read_only: true`
       # under this entry to only stream from it.
@@ -51,6 +57,13 @@ services:
         - container: FRIENDLY_NAME
           description:
             en_us: Server name shown on the TV (locked in the web UI while set here)
+        - container: IFNAME
+          description:
+            en_us: >-
+              LAN network interface to announce on, e.g. wlo1 or eth0
+              (comma-separate several). Set it if the host has Thread (wpan0),
+              Docker or VPN interfaces; empty picks LAN interfaces automatically
+              (locked in the web UI while set here)
       volumes:
         - container: /media
           description:

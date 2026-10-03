@@ -5,18 +5,25 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
 
 // BaseURL returns the media server base URL reachable at the same address the
 // client used to reach the DLNA server (host may include a port).
-func BaseURL(host string, port int) string {
+func (s *Server) BaseURL(host string) string {
+	return baseURL(host, s.Port, s.Interfaces)
+}
+
+// baseURL is BaseURL for the media server on port, replacing link-local
+// addresses only with addresses of the allowed interfaces (nil: all).
+func baseURL(host string, port int, allowed []string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
 	if ip, err := netip.ParseAddr(host); err == nil && ip.Is6() && ip.IsLinkLocalUnicast() {
-		if alt, ok := replaceLinkLocal(ip, interfaceAddrs()); ok {
+		if alt, ok := replaceLinkLocal(ip, interfaceAddrs(allowed)); ok {
 			host = alt.String()
 		}
 	}
@@ -54,15 +61,18 @@ func replaceLinkLocal(ip netip.Addr, ifaces [][]netip.Addr) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
-// interfaceAddrs lists the unicast addresses of each up network interface.
-func interfaceAddrs() [][]netip.Addr {
+// interfaceAddrs lists the unicast addresses of each up network interface in
+// allowed, or of all of them for nil. SSDP announces only on the allowed
+// interfaces, so addresses of others (a Thread mesh, Docker bridges) must not
+// end up in URLs either.
+func interfaceAddrs(allowed []string) [][]netip.Addr {
 	ifis, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
 	var all [][]netip.Addr
 	for _, ifi := range ifis {
-		if ifi.Flags&net.FlagUp == 0 {
+		if ifi.Flags&net.FlagUp == 0 || allowed != nil && !slices.Contains(allowed, ifi.Name) {
 			continue
 		}
 		addrs, err := ifi.Addrs()

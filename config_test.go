@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"flag"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,5 +208,44 @@ func TestConfigStore(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(p); string(b) != "http-port: 8080\n" {
 		t.Errorf("file %q", b)
+	}
+}
+
+func TestValidInterfaces(t *testing.T) {
+	known := map[string]bool{"wlo1": true, "enp1s0": true}
+	lookup := func(name string) error {
+		if !known[name] {
+			return errors.New("no such network interface")
+		}
+		return nil
+	}
+	for in, ok := range map[string]bool{
+		"":             true,
+		"wlo1":         true,
+		"wlo1,enp1s0":  true,
+		" wlo1 , ":     true,
+		"eth9":         false,
+		"wlo1,eth9":    false,
+		"wlo1,,enp1s0": true,
+	} {
+		if err := checkInterfaces(in, lookup); (err == nil) != ok {
+			t.Errorf("checkInterfaces(%q) = %v, want ok %v", in, err, ok)
+		}
+	}
+
+	// Against the real interfaces, through the setting spec.
+	ifs, err := net.Interfaces()
+	if err != nil || len(ifs) == 0 {
+		t.Skip("no network interfaces")
+	}
+	spec := settingSpecs["ifname"]
+	if spec.typ != "list" {
+		t.Errorf("ifname type = %q, want list", spec.typ)
+	}
+	if err := spec.check(ifs[0].Name); err != nil {
+		t.Errorf("check(%q) = %v", ifs[0].Name, err)
+	}
+	if err := spec.check(ifs[0].Name + ",no-such-if0"); err == nil {
+		t.Error("check accepted a missing interface")
 	}
 }

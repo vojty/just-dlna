@@ -12,7 +12,7 @@ func TestBaseURL(t *testing.T) {
 		"[fd00::5]:1338":    "http://[fd00::5]:1339",
 		"bee.local:1338":    "http://bee.local:1339",
 	} {
-		if got := BaseURL(host, 1339); got != want {
+		if got := baseURL(host, 1339, nil); got != want {
 			t.Errorf("BaseURL(%q) = %q, want %q", host, got, want)
 		}
 	}

@@ -27,7 +27,7 @@ const labels: Record<string, string> = {
   "dms-log-level": "DLNA library log level",
   "log-format": "Log format",
   "log-headers": "Log DLNA headers",
-  ifname: "Network interface",
+  ifname: "Network interfaces",
 };
 
 const groups: { title: string; names: string[] }[] = [
@@ -299,7 +299,7 @@ function Control({
         </Select.Root>
       );
     case "list":
-      // One network per line; stored comma separated.
+      // One entry per line; stored comma separated.
       return (
         <Field.Control
           render={<textarea rows={3} />}
