@@ -1,7 +1,7 @@
 import { Menu } from "@base-ui/react/menu";
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useRef, useState, type FormEvent } from "react";
+import { useRef, useState, type DragEvent, type FormEvent } from "react";
 import {
   api,
   errorText,
@@ -51,6 +51,16 @@ export const Route = createFileRoute("/files")({
   ),
 });
 
+/** Drag data type marking a drag of an entry within the page. */
+const ENTRY_DRAG_TYPE = "application/x-just-dlna-entry";
+
+/** Event handlers making an element a target for dropped entries and files. */
+interface DropZone {
+  onDragOver: (e: DragEvent<HTMLElement>) => void;
+  onDragLeave: (e: DragEvent<HTMLElement>) => void;
+  onDrop: (e: DragEvent<HTMLElement>) => void;
+}
+
 type Action = { kind: "mkdir" } | { kind: "rename" | "move" | "delete"; entry: FileEntry } | null;
 
 /** A mutation of the media folder that refreshes every folder listing after it succeeds. */
@@ -70,6 +80,9 @@ function FilesPage() {
   const [action, setAction] = useState<Action>(null);
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
+  // The entry being dragged within the page, and the folder it would be dropped into.
+  const dragged = useRef<FileEntry | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const mkdir = useFileMutation(api.mkdir);
@@ -90,6 +103,56 @@ function FilesPage() {
     enqueue(dir, Array.from(files), existing);
   }
 
+  function endDrag() {
+    dragDepth.current = 0;
+    dragged.current = null;
+    setDragging(false);
+    setDropTarget(null);
+  }
+
+  /** Whether the drag can be dropped into the folder target. */
+  function canDrop(target: string, dt: DataTransfer) {
+    if (dt.types.includes("Files")) return true;
+    const entry = dragged.current;
+    if (!entry || !dt.types.includes(ENTRY_DRAG_TYPE)) return false;
+    return (
+      target !== entry.path &&
+      target !== parentPath(entry.path) &&
+      !target.startsWith(`${entry.path}/`)
+    );
+  }
+
+  /** Makes an element a drop target moving entries, or uploading files, into the folder target. */
+  function dropZone(target: string): DropZone {
+    return {
+      onDragOver: (e) => {
+        if (!canDrop(target, e.dataTransfer)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = dragged.current ? "move" : "copy";
+        setDropTarget(target);
+      },
+      onDragLeave: (e) => {
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        setDropTarget((t) => (t === target ? null : t));
+      },
+      onDrop: (e) => {
+        if (!canDrop(target, e.dataTransfer)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const entry = dragged.current;
+        endDrag();
+        if (e.dataTransfer.types.includes("Files")) {
+          if (e.dataTransfer.files.length > 0) enqueue(target, Array.from(e.dataTransfer.files));
+        } else if (entry) {
+          move.mutate(
+            { from: entry.path, to: joinPath(target, entry.name) },
+            { onSuccess: () => notify(`Moved "${entry.name}" to ${folderName(target)}`) },
+          );
+        }
+      },
+    };
+  }
+
   return (
     <div
       className="relative flex flex-col gap-4"
@@ -107,13 +170,13 @@ function FilesPage() {
       }}
       onDrop={(e) => {
         e.preventDefault();
-        dragDepth.current = 0;
-        setDragging(false);
-        upload(e.dataTransfer.files);
+        const files = e.dataTransfer.types.includes("Files");
+        endDrag();
+        if (files) upload(e.dataTransfer.files);
       }}
     >
       <div className="flex flex-wrap items-center gap-3">
-        <Breadcrumbs path={dir} />
+        <Breadcrumbs path={dir} dropZone={dropZone} dropTarget={dropTarget} />
         <div className="ml-auto flex gap-2">
           <Button onClick={() => setAction({ kind: "mkdir" })}>
             <Icon name="plus" />
@@ -154,7 +217,22 @@ function FilesPage() {
             </thead>
             <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
               {listing.entries.map((entry) => (
-                <tr key={entry.path} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+                <tr
+                  key={entry.path}
+                  draggable
+                  onDragStart={(e) => {
+                    dragged.current = entry;
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData(ENTRY_DRAG_TYPE, entry.path);
+                  }}
+                  onDragEnd={endDrag}
+                  {...(entry.isDir && dropZone(entry.path))}
+                  className={cx(
+                    "hover:bg-neutral-50 dark:hover:bg-neutral-800/50",
+                    dropTarget === entry.path &&
+                      "bg-indigo-50 outline-2 -outline-offset-2 outline-indigo-500 dark:bg-indigo-950/60",
+                  )}
+                >
                   <td className="max-w-0 px-4 py-2">
                     <EntryName entry={entry} />
                   </td>
@@ -174,9 +252,9 @@ function FilesPage() {
         )}
       </div>
 
-      {dragging && (
+      {dragging && dropTarget === null && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-xl border-2 border-dashed border-indigo-500 bg-indigo-50/80 text-sm font-medium text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-300">
-          Drop files to upload to {dir === "." ? "the media folder" : dir}
+          Drop files to upload to {folderName(dir)}
         </div>
       )}
 
@@ -243,13 +321,31 @@ function FilesPage() {
   );
 }
 
-function Breadcrumbs({ path }: { path: string }) {
+function folderName(path: string) {
+  return path === "." ? "the media folder" : path;
+}
+
+const dropHighlight = "bg-indigo-100 outline-2 outline-indigo-500 dark:bg-indigo-950";
+
+function Breadcrumbs({
+  path,
+  dropZone,
+  dropTarget,
+}: {
+  path: string;
+  dropZone: (target: string) => DropZone;
+  dropTarget: string | null;
+}) {
   const parts = path === "." ? [] : path.split("/");
   return (
     <nav aria-label="Folder" className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
       <Link
         to="/files"
-        className="flex items-center gap-1.5 rounded px-1.5 py-1 font-medium hover:bg-neutral-200/70 dark:hover:bg-neutral-800"
+        {...dropZone(".")}
+        className={cx(
+          "flex items-center gap-1.5 rounded px-1.5 py-1 font-medium hover:bg-neutral-200/70 dark:hover:bg-neutral-800",
+          dropTarget === "." && dropHighlight,
+        )}
       >
         <Icon name="home" />
         Media
@@ -268,7 +364,11 @@ function Breadcrumbs({ path }: { path: string }) {
               <Link
                 to="/files"
                 search={{ path: to }}
-                className="truncate rounded px-1.5 py-1 hover:bg-neutral-200/70 dark:hover:bg-neutral-800"
+                {...dropZone(to)}
+                className={cx(
+                  "truncate rounded px-1.5 py-1 hover:bg-neutral-200/70 dark:hover:bg-neutral-800",
+                  dropTarget === to && dropHighlight,
+                )}
               >
                 {part}
               </Link>
