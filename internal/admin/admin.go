@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,7 @@ type Setting struct {
 // Config is the server configuration as shown in the UI.
 type Config struct {
 	File           string    `json:"file" doc:"Path of the config file."`
+	MediaPath      string    `json:"mediaPath" doc:"Absolute path of the media folder served over DLNA."`
 	RestartPending bool      `json:"restartPending" doc:"Saved settings wait for a restart to apply."`
 	Settings       []Setting `json:"settings" nullable:"false"`
 }
@@ -91,8 +93,9 @@ type Server struct {
 	Restart func() // restarts the process to apply saved settings
 	Logger  *slog.Logger
 
-	root    *os.Root
-	started time.Time
+	root      *os.Root
+	mediaPath string // absolute path of the media folder
+	started   time.Time
 
 	mu             sync.Mutex
 	restartPending bool
@@ -100,17 +103,22 @@ type Server struct {
 
 // New returns a server managing the files under mediaDir.
 func New(mediaDir, uiDir string, config ConfigStore, restart func(), logger *slog.Logger) (*Server, error) {
-	root, err := os.OpenRoot(mediaDir)
+	abs, err := filepath.Abs(mediaDir)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(abs)
 	if err != nil {
 		return nil, err
 	}
 	return &Server{
-		UIDir:   uiDir,
-		Config:  config,
-		Restart: restart,
-		Logger:  logger,
-		root:    root,
-		started: time.Now(),
+		UIDir:     uiDir,
+		Config:    config,
+		Restart:   restart,
+		Logger:    logger,
+		root:      root,
+		mediaPath: abs,
+		started:   time.Now(),
 	}, nil
 }
 
@@ -215,7 +223,12 @@ func (s *Server) config(ctx context.Context) (*response[Config], error) {
 	s.mu.Lock()
 	pending := s.restartPending
 	s.mu.Unlock()
-	return &response[Config]{Config{File: file, RestartPending: pending, Settings: settings}}, nil
+	return &response[Config]{Config{
+		File:           file,
+		MediaPath:      s.mediaPath,
+		RestartPending: pending,
+		Settings:       settings,
+	}}, nil
 }
 
 func (s *Server) getConfig(ctx context.Context, _ *struct{}) (*response[Config], error) {

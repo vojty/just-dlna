@@ -152,6 +152,24 @@ function SettingsForm({ config }: { config: Config }) {
         </div>
       )}
 
+      <section className="rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+        <h2 className="border-b border-neutral-200 px-5 py-3 text-sm font-semibold dark:border-neutral-800">
+          Media folder
+        </h2>
+        <div className="grid gap-x-6 gap-y-2 px-5 py-4 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+          <div className="flex flex-col gap-1">
+            <span className="text-sm font-medium">Path on the server</span>
+            <span className="text-xs text-neutral-500">
+              The folder shared over DLNA and managed in Files. Change it with <code>path</code> /{" "}
+              <code>MEDIA_PATH</code> when starting the server.
+            </span>
+          </div>
+          <code className="self-center rounded-lg bg-neutral-100 px-3 py-2 text-sm break-all select-all dark:bg-neutral-800">
+            {config.mediaPath}
+          </code>
+        </div>
+      </section>
+
       {groups.map((g) => {
         const settings = g.names.map((n) => byName.get(n)).filter((s): s is Setting => !!s);
         if (settings.length === 0) return null;

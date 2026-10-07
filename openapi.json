@@ -8,6 +8,10 @@
             "description": "Path of the config file.",
             "type": "string"
           },
+          "mediaPath": {
+            "description": "Absolute path of the media folder served over DLNA.",
+            "type": "string"
+          },
           "restartPending": {
             "description": "Saved settings wait for a restart to apply.",
             "type": "boolean"
@@ -21,6 +25,7 @@
         },
         "required": [
           "file",
+          "mediaPath",
           "restartPending",
           "settings"
         ],

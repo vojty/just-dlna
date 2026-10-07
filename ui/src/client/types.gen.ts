@@ -10,6 +10,10 @@ export type Config = {
    */
   file: string;
   /**
+   * Absolute path of the media folder served over DLNA.
+   */
+  mediaPath: string;
+  /**
    * Saved settings wait for a restart to apply.
    */
   restartPending: boolean;
