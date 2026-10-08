@@ -153,6 +153,22 @@ This starts the Go server and the Vite dev server with hot reload.
   and `ui/src/client`. CI fails if they are out of date. API docs are at
   `/api/docs`.
 
+### Image size
+
+Most of the Docker image is Alpine's `ffmpeg` package, which pulls in every
+video codec and hardware library (x264, x265, libvpx, aom, dav1d, Vulkan,
+VA-API, ...). `apk add --no-cache` already leaves no cache behind. just-dlna
+only uses ffprobe for media info and ffmpeg for converting subtitles to SRT,
+so none of those codecs are needed.
+
+Possible fix: build ffmpeg in a separate stage with `--disable-everything`
+and enable only the `file` protocol, all demuxers and parsers (so ffprobe can
+still identify streams), the text subtitle decoders/encoders (`subrip`, `ass`,
+`ssa`, `webvtt`, `mov_text`, ...) and the `srt` muxer. Then copy just
+`ffmpeg` and `ffprobe` into the final image. That would make the layer a few
+MB instead of 100+ MB, but the build gets slower (especially for other
+architectures) and the configure flags have to be kept up to date.
+
 The UI uses Vite, React, TypeScript, TanStack Router, Tailwind CSS and Base UI.
 The API uses Huma.
 
